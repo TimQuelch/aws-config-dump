@@ -1,0 +1,14 @@
+[licenses]
+allow = [
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "GPL-3.0-only",
+  "ISC",
+  "MIT",
+  "OpenSSL",
+  "Unicode-3.0",
+]
+
+[bans]
+multiple-versions = "allow"
