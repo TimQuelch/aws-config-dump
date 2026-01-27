@@ -21,13 +21,14 @@ pub trait Output {
 }
 
 pub struct StdoutOutput {
-    sender: Sender<serde_json::Value>,
+    sender: Option<Sender<serde_json::Value>>,
+    worker_handle: Option<JoinHandle<()>>,
 }
 
 impl StdoutOutput {
     pub fn new() -> Self {
         let (sender, mut receiver) = mpsc::channel(8);
-        tokio::task::spawn(async move {
+        let worker_handle = tokio::task::spawn(async move {
             let mut stdout = tokio::io::stdout();
             while let Some(value) = receiver.recv().await {
                 stdout
@@ -42,16 +43,25 @@ impl StdoutOutput {
                     .unwrap();
             }
         });
-        Self { sender }
+        Self {
+            sender: Some(sender),
+            worker_handle: Some(worker_handle),
+        }
     }
 }
 
 impl Output for StdoutOutput {
     async fn send(&self, _: ResourceType, value: serde_json::Value) -> anyhow::Result<()> {
-        Ok(self.sender.send(value).await?)
+        Ok(self.sender.clone().unwrap().send(value).await?)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
+        self.sender.take();
+
+        if let Some(handle) = self.worker_handle.take() {
+            handle.await?;
+        }
+
         Ok(())
     }
 }
