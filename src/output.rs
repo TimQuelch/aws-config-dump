@@ -197,8 +197,6 @@ impl Output for DuckDbOutput {
                 .replace("::", "_")
                 .to_lowercase();
 
-            dbg!(&path);
-            dbg!(&table_name);
             db_conn.execute(
                 format!(concat!(
                     "CREATE TABLE {} AS SELECT ",

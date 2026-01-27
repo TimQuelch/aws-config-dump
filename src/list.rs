@@ -70,8 +70,6 @@ pub async fn resource_configs(
         .await;
     let client = aws_sdk_config::Client::new(&config);
 
-    dbg!(config.retry_config());
-
     resource_id_stream(resource_types)
         .await
         .chunks(100)

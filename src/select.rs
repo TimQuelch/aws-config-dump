@@ -69,7 +69,6 @@ pub async fn select_resources(mut output: impl Output) -> anyhow::Result<()> {
         .filter_map(|r| future::ready(r.inspect_err(|err| error!(err = %err, "API error")).ok()))
         .flat_map(|page| stream::iter(page.results().to_owned().into_iter()))
         .for_each_concurrent(None, async |r| {
-            dbg!(&r);
             let resource = serde_json::from_str::<QueryResponse>(&r).unwrap();
             output
                 .send(
