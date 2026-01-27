@@ -1,5 +1,6 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, sync::LazyLock, time::Duration};
 
+use aws_config::{BehaviorVersion, retry::RetryConfig};
 use aws_sdk_config::types::{ResourceIdentifier, ResourceKey, ResourceType};
 use aws_smithy_types_convert::stream::PaginationStreamExt;
 use futures::{
@@ -21,7 +22,14 @@ static ALL_TYPES: LazyLock<Vec<ResourceType>> = LazyLock::new(|| {
 pub async fn resource_id_stream(
     resource_types: &[ResourceType],
 ) -> impl Stream<Item = ResourceIdentifier> {
-    let config = aws_config::load_from_env().await;
+    let retry_config = RetryConfig::standard()
+        .with_initial_backoff(Duration::from_millis(100))
+        .with_max_attempts(100);
+
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .retry_config(retry_config)
+        .load()
+        .await;
     let client = aws_sdk_config::Client::new(&config);
 
     let type_iter = if resource_types.is_empty() {
@@ -52,7 +60,14 @@ pub async fn resource_configs(
     resource_types: &[ResourceType],
     mut output: impl Output,
 ) -> anyhow::Result<()> {
-    let config = aws_config::load_from_env().await;
+    let retry_config = RetryConfig::standard()
+        .with_initial_backoff(Duration::from_millis(100))
+        .with_max_attempts(100);
+
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .retry_config(retry_config)
+        .load()
+        .await;
     let client = aws_sdk_config::Client::new(&config);
 
     dbg!(config.retry_config());
