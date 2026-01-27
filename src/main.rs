@@ -1,8 +1,10 @@
 use aws_sdk_config::types::ResourceType;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::aot::{Shell, generate};
+use output::JsonFileOutput;
 
 mod list;
+mod output;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -20,6 +22,9 @@ pub enum Command {
 
 #[tokio::main()]
 async fn main() -> anyhow::Result<()> {
+    let subscriber = tracing_subscriber::FmtSubscriber::new();
+    tracing::subscriber::set_global_default(subscriber)?;
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -30,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::List { types } => list::list(&types).await,
-        Command::Configs { types } => list::resource_configs(&types).await,
+        // Command::Configs { types } => list::resource_configs(&types, StdoutOutput::new()).await,
+        Command::Configs { types } => list::resource_configs(&types, JsonFileOutput::new()).await,
     }
 }

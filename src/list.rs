@@ -8,6 +8,8 @@ use futures::{
 };
 use serde_json::{Value, json};
 
+use crate::output::Output;
+
 static ALL_TYPES: LazyLock<Vec<ResourceType>> = LazyLock::new(|| {
     ResourceType::values()
         .iter()
@@ -46,9 +48,14 @@ pub async fn resource_id_stream(
         .flat_map(|page| stream::iter(page.resource_identifiers().to_owned().into_iter()))
 }
 
-pub async fn resource_configs(resource_types: &[ResourceType]) -> anyhow::Result<()> {
+pub async fn resource_configs(
+    resource_types: &[ResourceType],
+    mut output: impl Output,
+) -> anyhow::Result<()> {
     let config = aws_config::load_from_env().await;
     let client = aws_sdk_config::Client::new(&config);
+
+    dbg!(config.retry_config());
 
     resource_id_stream(resource_types)
         .await
@@ -73,10 +80,9 @@ pub async fn resource_configs(resource_types: &[ResourceType]) -> anyhow::Result
         .buffer_unordered(10)
         .filter_map(|r| future::ready(r.inspect_err(|e| eprintln!("{}", e.as_service_error().unwrap())).ok()))
         .flat_map(|page| stream::iter(page.base_configuration_items().to_owned().into_iter()))
-        .for_each(|r| {
-            serde_json::to_writer(
-                &std::io::stdout(),
-                &json!({
+        .for_each(async |r| {
+            output.send( r.resource_type().unwrap().clone(),
+                json!({
                     "resource_type": r.resource_type().map(aws_sdk_config::types::ResourceType::as_str),
                     "resource_id": r.resource_id(),
                     "resource_name": r.resource_name(),
@@ -84,13 +90,11 @@ pub async fn resource_configs(resource_types: &[ResourceType]) -> anyhow::Result
                     "configuration": r.configuration().and_then(|x| serde_json::from_str::<Value>(x).ok()),
                     "supplementary_configuration": r.supplementary_configuration(),
                 }),
-            )
-            .unwrap();
-            future::ready(
-                (),
-            )
+            ).await.unwrap();
         })
         .await;
+
+    output.close().await?;
 
     Ok(())
 }
