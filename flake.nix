@@ -30,7 +30,10 @@
           inherit src;
           strictDeps = true;
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ];
+          buildInputs = [
+            pkgs.openssl
+            pkgs.duckdb
+          ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;

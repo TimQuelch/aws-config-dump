@@ -163,3 +163,61 @@ impl Output for JsonFileOutput {
         Ok(())
     }
 }
+
+pub struct DuckDbOutput {
+    file_output: JsonFileOutput,
+}
+
+impl DuckDbOutput {
+    pub fn new() -> Self {
+        Self {
+            file_output: JsonFileOutput::new(),
+        }
+    }
+}
+
+impl Output for DuckDbOutput {
+    async fn send(
+        &self,
+        resource_type: ResourceType,
+        value: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        self.file_output.send(resource_type, value).await
+    }
+
+    async fn close(&mut self) -> anyhow::Result<()> {
+        self.file_output.close().await?;
+
+        let db_conn = duckdb::Connection::open("./db.duckdb")
+            .inspect_err(|e| error!(error = %e, "failed open duckdb database"))
+            .unwrap();
+
+        let json_files = std::fs::read_dir(".")
+            .inspect_err(|e| error!(error = %e, "failed list directory"))
+            .unwrap()
+            .filter_map(|x| {
+                x.ok().map(|x| x.path()).take_if(|path| {
+                    path.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                })
+            });
+
+        for path in json_files {
+            let table_name = path
+                .file_prefix()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .trim_start_matches("AWS::")
+                .replace("::", "_")
+                .to_lowercase();
+
+            db_conn.execute(
+                format!("CREATE TABLE {table_name} AS SELECT * FROM read_json(?);").as_str(),
+                [path.to_str().unwrap()],
+            )?;
+        }
+
+        Ok(())
+    }
+}

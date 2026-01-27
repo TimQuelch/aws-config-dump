@@ -1,7 +1,7 @@
 use aws_sdk_config::types::ResourceType;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::aot::{Shell, generate};
-use output::JsonFileOutput;
+use output::DuckDbOutput;
 
 mod list;
 mod output;
@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::List { types } => list::list(&types).await,
         // Command::Configs { types } => list::resource_configs(&types, StdoutOutput::new()).await,
-        Command::Configs { types } => list::resource_configs(&types, JsonFileOutput::new()).await,
+        // Command::Configs { types } => list::resource_configs(&types, JsonFileOutput::new()).await,
+        Command::Configs { types } => list::resource_configs(&types, DuckDbOutput::new()).await,
     }
 }
