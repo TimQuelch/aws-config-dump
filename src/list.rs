@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::{collections::HashMap, sync::LazyLock};
 
 use aws_sdk_config::types::{ResourceIdentifier, ResourceKey, ResourceType};
 use aws_smithy_types_convert::stream::PaginationStreamExt;
@@ -78,19 +78,47 @@ pub async fn resource_configs(
                 .send()
         })
         .buffer_unordered(10)
-        .filter_map(|r| future::ready(r.inspect_err(|e| eprintln!("{}", e.as_service_error().unwrap())).ok()))
+        .filter_map(|r| {
+            future::ready(
+                r.inspect_err(|e| eprintln!("{}", e.as_service_error().unwrap()))
+                    .ok(),
+            )
+        })
         .flat_map(|page| stream::iter(page.base_configuration_items().to_owned().into_iter()))
         .for_each(async |r| {
-            output.send( r.resource_type().unwrap().clone(),
-                json!({
-                    "resource_type": r.resource_type().map(aws_sdk_config::types::ResourceType::as_str),
-                    "resource_id": r.resource_id(),
-                    "resource_name": r.resource_name(),
-                    "arn": r.arn(),
-                    "configuration": r.configuration().and_then(|x| serde_json::from_str::<Value>(x).ok()),
-                    "supplementary_configuration": r.supplementary_configuration(),
-                }),
-            ).await.unwrap();
+            let resource_type = r
+                .resource_type()
+                .map(aws_sdk_config::types::ResourceType::as_str);
+
+            let configuration = r
+                .configuration()
+                .map(|v| serde_json::from_str::<Value>(v).unwrap_or(Value::String(v.to_string())));
+
+            let supplementary_configuration = r.supplementary_configuration().map(|sup_config| {
+                sup_config
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k,
+                            serde_json::from_str::<Value>(v).unwrap_or(Value::String(v.clone())),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>()
+            });
+            output
+                .send(
+                    r.resource_type().unwrap().clone(),
+                    json!({
+                        "resource_type": resource_type,
+                        "resource_id": r.resource_id(),
+                        "resource_name": r.resource_name(),
+                        "arn": r.arn(),
+                        "configuration": configuration,
+                        "supplementary_configuration": supplementary_configuration,
+                    }),
+                )
+                .await
+                .unwrap();
         })
         .await;
 
