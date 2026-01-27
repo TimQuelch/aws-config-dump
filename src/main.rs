@@ -5,6 +5,7 @@ use output::DuckDbOutput;
 
 mod list;
 mod output;
+mod select;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -18,11 +19,14 @@ pub enum Command {
     List { types: Vec<ResourceType> },
     Configs { types: Vec<ResourceType> },
     Completions { shell: Shell },
+    Select,
 }
 
 #[tokio::main()]
 async fn main() -> anyhow::Result<()> {
-    let subscriber = tracing_subscriber::FmtSubscriber::new();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     let cli = Cli::parse();
@@ -38,5 +42,6 @@ async fn main() -> anyhow::Result<()> {
         // Command::Configs { types } => list::resource_configs(&types, StdoutOutput::new()).await,
         // Command::Configs { types } => list::resource_configs(&types, JsonFileOutput::new()).await,
         Command::Configs { types } => list::resource_configs(&types, DuckDbOutput::new()).await,
+        Command::Select => select::select_resources(DuckDbOutput::new()).await,
     }
 }

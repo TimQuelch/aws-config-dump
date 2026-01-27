@@ -1,6 +1,5 @@
 use std::collections::{HashMap, hash_map::Entry};
 
-use aws_sdk_config::types::ResourceType;
 use futures::future::join_all;
 use tokio::{
     fs::OpenOptions,
@@ -11,33 +10,24 @@ use tokio::{
 use tracing::error;
 
 pub trait Output {
-    async fn send(
-        &self,
-        resource_type: ResourceType,
-        value: serde_json::Value,
-    ) -> anyhow::Result<()>;
+    async fn send(&self, resource_type: String, value: String) -> anyhow::Result<()>;
 
     async fn close(&mut self) -> anyhow::Result<()>;
 }
 
 pub struct StdoutOutput {
-    sender: Option<Sender<serde_json::Value>>,
+    sender: Option<Sender<String>>,
     worker_handle: Option<JoinHandle<()>>,
 }
 
 impl StdoutOutput {
     pub fn new() -> Self {
-        let (sender, mut receiver) = mpsc::channel(8);
+        let (sender, mut receiver) = mpsc::channel::<String>(8);
         let worker_handle = tokio::task::spawn(async move {
             let mut stdout = tokio::io::stdout();
             while let Some(value) = receiver.recv().await {
                 stdout
-                    .write(
-                        serde_json::to_vec(&value)
-                            .inspect_err(|e| error!(error = %e, "failed serialise json"))
-                            .unwrap()
-                            .as_slice(),
-                    )
+                    .write(value.as_bytes())
                     .await
                     .inspect_err(|e| error!(error = %e, "failed to write to stdout"))
                     .unwrap();
@@ -51,7 +41,7 @@ impl StdoutOutput {
 }
 
 impl Output for StdoutOutput {
-    async fn send(&self, _: ResourceType, value: serde_json::Value) -> anyhow::Result<()> {
+    async fn send(&self, _: String, value: String) -> anyhow::Result<()> {
         Ok(self.sender.clone().unwrap().send(value).await?)
     }
 
@@ -67,7 +57,7 @@ impl Output for StdoutOutput {
 }
 
 pub struct JsonFileOutput {
-    sender: Option<Sender<(ResourceType, serde_json::Value)>>,
+    sender: Option<Sender<(String, String)>>,
     worker_handle: Option<JoinHandle<()>>,
 }
 
@@ -83,7 +73,7 @@ impl JsonFileOutput {
         }
     }
 
-    async fn fan_out_writers(mut receiver: Receiver<(ResourceType, serde_json::Value)>) {
+    async fn fan_out_writers(mut receiver: Receiver<(String, String)>) {
         let mut file_writers = HashMap::<_, (Sender<_>, JoinHandle<()>)>::new();
         while let Some((resource_type, value)) = receiver.recv().await {
             let writer = match file_writers.entry(resource_type.clone()) {
@@ -111,10 +101,8 @@ impl JsonFileOutput {
         join_all(handles.into_iter()).await;
     }
 
-    async fn file_writer(
-        resource_type: ResourceType,
-    ) -> (Sender<serde_json::Value>, JoinHandle<()>) {
-        let (sender, mut receiver) = mpsc::channel::<serde_json::Value>(8);
+    async fn file_writer(resource_type: String) -> (Sender<String>, JoinHandle<()>) {
+        let (sender, mut receiver) = mpsc::channel::<String>(8);
         let mut writer = BufWriter::new(
             OpenOptions::new()
                 .create_new(true)
@@ -128,12 +116,7 @@ impl JsonFileOutput {
         let handle = tokio::task::spawn(async move {
             while let Some(value) = receiver.recv().await {
                 writer
-                    .write(
-                        serde_json::to_vec(&value)
-                            .inspect_err(|e| error!(error = %e, "failed serialise json"))
-                            .unwrap()
-                            .as_slice(),
-                    )
+                    .write(value.as_bytes())
                     .await
                     .inspect_err(|e| error!(error = %e, "failed to write to file"))
                     .unwrap();
@@ -150,11 +133,7 @@ impl JsonFileOutput {
 }
 
 impl Output for JsonFileOutput {
-    async fn send(
-        &self,
-        resource_type: ResourceType,
-        value: serde_json::Value,
-    ) -> anyhow::Result<()> {
+    async fn send(&self, resource_type: String, value: String) -> anyhow::Result<()> {
         Ok(self
             .sender
             .clone()
@@ -187,11 +166,7 @@ impl DuckDbOutput {
 }
 
 impl Output for DuckDbOutput {
-    async fn send(
-        &self,
-        resource_type: ResourceType,
-        value: serde_json::Value,
-    ) -> anyhow::Result<()> {
+    async fn send(&self, resource_type: String, value: String) -> anyhow::Result<()> {
         self.file_output.send(resource_type, value).await
     }
 
@@ -222,8 +197,15 @@ impl Output for DuckDbOutput {
                 .replace("::", "_")
                 .to_lowercase();
 
+            dbg!(&path);
+            dbg!(&table_name);
             db_conn.execute(
-                format!("CREATE TABLE {table_name} AS SELECT * FROM read_json(?);").as_str(),
+                format!(concat!(
+                    "CREATE TABLE {} AS SELECT ",
+                    "COLUMNS(c -> c not in ['configuration', 'supplementaryConfiguration']), ",
+                    "UNNEST(COLUMNS(c -> c in ['configuration', 'supplementaryConfiguration'])) ",
+                    "FROM read_json(?);",
+                ), table_name).as_str(),
                 [path.to_str().unwrap()],
             )?;
         }

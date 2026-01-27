@@ -122,7 +122,7 @@ pub async fn resource_configs(
             });
             output
                 .send(
-                    r.resource_type().unwrap().clone(),
+                    r.resource_type().unwrap().as_str().to_owned(),
                     json!({
                         "resource_type": resource_type,
                         "resource_id": r.resource_id(),
@@ -130,7 +130,8 @@ pub async fn resource_configs(
                         "arn": r.arn(),
                         "configuration": configuration,
                         "supplementary_configuration": supplementary_configuration,
-                    }),
+                    })
+                    .to_string(),
                 )
                 .await
                 .unwrap();
