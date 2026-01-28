@@ -1,9 +1,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::aot::{Shell, generate};
-use output::DuckDbOutput;
 
-mod output;
-mod select;
+mod build;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -14,8 +12,13 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    Completions { shell: Shell },
-    Select,
+    Completions {
+        shell: Shell,
+    },
+    Build {
+        #[arg(short, long)]
+        aggregator: Option<String>,
+    },
 }
 
 #[tokio::main()]
@@ -34,6 +37,6 @@ async fn main() -> anyhow::Result<()> {
             generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
-        Command::Select => select::select_resources(DuckDbOutput::new()).await,
+        Command::Build { aggregator } => build::build_database(aggregator).await,
     }
 }
