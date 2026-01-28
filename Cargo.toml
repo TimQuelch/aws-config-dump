@@ -14,6 +14,7 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-config = "1"
 aws-smithy-async = "1"
 aws-smithy-types-convert = { version = "0.60", features = ["convert-streams"] }
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = "4"
 duckdb = "1.4"

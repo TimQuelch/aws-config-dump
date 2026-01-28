@@ -1,5 +1,6 @@
 use std::collections::{HashMap, hash_map::Entry};
 
+use duckdb::params_from_iter;
 use futures::future::join_all;
 use tokio::{
     fs::OpenOptions,
@@ -177,7 +178,7 @@ impl Output for DuckDbOutput {
             .inspect_err(|e| error!(error = %e, "failed open duckdb database"))
             .unwrap();
 
-        let json_files = std::fs::read_dir(".")
+        let json_files: Vec<_> = std::fs::read_dir(".")
             .inspect_err(|e| error!(error = %e, "failed list directory"))
             .unwrap()
             .filter_map(|x| {
@@ -185,9 +186,10 @@ impl Output for DuckDbOutput {
                     path.extension()
                         .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
                 })
-            });
+            })
+            .collect();
 
-        for path in json_files {
+        for path in &json_files {
             let table_name = path
                 .file_prefix()
                 .unwrap()
@@ -198,15 +200,18 @@ impl Output for DuckDbOutput {
                 .to_lowercase();
 
             db_conn.execute(
-                format!(concat!(
-                    "CREATE TABLE {} AS SELECT ",
-                    "COLUMNS(c -> c not in ['configuration', 'supplementaryConfiguration']), ",
-                    "UNNEST(COLUMNS(c -> c in ['configuration', 'supplementaryConfiguration'])) ",
-                    "FROM read_json(?);",
-                ), table_name).as_str(),
+                format!("CREATE TABLE {table_name} AS SELECT * FROM read_json(?);").as_str(),
                 [path.to_str().unwrap()],
             )?;
         }
+
+        let placeholders = "?,".repeat(json_files.len());
+
+        db_conn.execute(
+            format!("CREATE TABLE resources AS SELECT * FROM read_json([{placeholders}]);")
+                .as_str(),
+            params_from_iter(json_files.iter().map(|path| path.to_str().unwrap())),
+        )?;
 
         Ok(())
     }
