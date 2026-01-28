@@ -15,7 +15,7 @@ aws-sdk-config = "1"
 aws-smithy-async = "1"
 aws-smithy-types-convert = { version = "0.60", features = ["convert-streams"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
-clap_complete = "4"
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
 duckdb = "1.4"
 futures = "0.3"
 tempfile = "3"
