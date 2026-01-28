@@ -1,9 +1,7 @@
-use aws_sdk_config::types::ResourceType;
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::aot::{Shell, generate};
 use output::DuckDbOutput;
 
-mod list;
 mod output;
 mod select;
 
@@ -16,8 +14,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    List { types: Vec<ResourceType> },
-    Configs { types: Vec<ResourceType> },
     Completions { shell: Shell },
     Select,
 }
@@ -38,10 +34,6 @@ async fn main() -> anyhow::Result<()> {
             generate(shell, &mut cmd, name, &mut std::io::stdout());
             Ok(())
         }
-        Command::List { types } => list::list(&types).await,
-        // Command::Configs { types } => list::resource_configs(&types, StdoutOutput::new()).await,
-        // Command::Configs { types } => list::resource_configs(&types, JsonFileOutput::new()).await,
-        Command::Configs { types } => list::resource_configs(&types, DuckDbOutput::new()).await,
         Command::Select => select::select_resources(DuckDbOutput::new()).await,
     }
 }
