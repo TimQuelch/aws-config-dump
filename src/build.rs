@@ -4,7 +4,7 @@ use aws_config::retry::RetryConfig;
 use aws_smithy_types_convert::stream::PaginationStreamExt;
 use duckdb::params;
 use futures::{Stream, future, stream::StreamExt};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::util;
 
@@ -89,7 +89,27 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
             || select_resource_config_stream(&client),
             |aggregator| select_aggregate_resource_config_stream(&client, aggregator),
         )
-        .for_each(|resource| {
+        .for_each(|mut resource| {
+            // AWS is frustratingly inconsistent. I've found that there are some resources which will
+            // return an empty object as the tag field instead of an empty array. So far I've
+            // noticed AWS::Config::ConformancePackCompliance does this. Here we work around this by
+            // parsing the JSON and setting tags field to an empty array if it is not already an
+            // array.
+            //
+            // If this were not the case then we could omit parsing json here and simply write
+            // directly to file.
+            let mut value: serde_json::Value = serde_json::from_str(&resource).unwrap();
+            if let Some(tags) = value.get("tags")
+                && !tags.is_array()
+            {
+                warn!(%tags, resource, "tags field is not an array, setting to empty array");
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("tags".into(), serde_json::Value::Array(vec![]));
+                resource = value.to_string();
+            }
+
             json_file.write_all(resource.as_bytes()).unwrap();
             future::ready(())
         })

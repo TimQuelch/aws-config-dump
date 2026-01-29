@@ -344,6 +344,7 @@ dependencies = [
  "clap_complete",
  "duckdb",
  "futures",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
