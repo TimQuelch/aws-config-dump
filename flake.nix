@@ -29,16 +29,24 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [
-            pkgs.openssl
-            pkgs.duckdb
-          ];
+          buildInputs = [ pkgs.duckdb ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        aws-config-dump = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+        aws-config-dump = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            nativeBuildInputs = [ pkgs.installShellFiles ];
+            postInstall = ''
+              installShellCompletion --cmd aws-config-dump \
+                --bash <(COMPLETE=bash $out/bin/aws-config-dump) \
+                --zsh <(COMPLETE=zsh $out/bin/aws-config-dump) \
+                --fish <(COMPLETE=fish $out/bin/aws-config-dump)
+            '';
+          }
+        );
 
         preCommit = pre-commit.lib.${system}.run {
           # Need to provide src if precommit is used as a check, however because it is only used for
