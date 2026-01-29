@@ -135,7 +135,7 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
             configurationItemStatus VARCHAR,
             configurationStateId VARCHAR,
             tags STRUCT(key VARCHAR, value VARCHAR)[],
-            relationships STRUCT(relationship_name VARCHAR, resource_type VARCHAR, resource_id VARCHAR, resource_name VARCHAR)[],
+            relationships STRUCT(relationshipName VARCHAR, resourceType VARCHAR, resourceId VARCHAR, resourceName VARCHAR)[],
             configuration JSON,
             supplementaryConfiguration JSON,
         );",
