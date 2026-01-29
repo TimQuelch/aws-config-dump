@@ -6,6 +6,8 @@ use duckdb::params;
 use futures::{Stream, future, stream::StreamExt};
 use tracing::{error, info};
 
+use crate::util;
+
 const QUERY: &str = concat!(
     "SELECT ",
     "arn,",
@@ -153,10 +155,7 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
         })
         .for_each(
             |(resource_type, conf_schema, supp_schema): (String, String, String)| {
-                let table_name = resource_type
-                    .trim_start_matches("AWS::")
-                    .replace("::", "_")
-                    .to_lowercase();
+                let table_name = util::resource_table_name(&resource_type);
 
                 let result = db_conn.execute(
                     format!(

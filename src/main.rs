@@ -4,6 +4,7 @@ use clap_complete::{ArgValueCandidates, CompleteEnv};
 mod build;
 mod completion;
 mod query;
+mod util;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -28,6 +29,9 @@ pub enum Command {
         /// Filter on account
         #[arg(short, long, add = ArgValueCandidates::new(completion::AccountCandidates::new()))]
         account: Option<String>,
+        /// Query
+        #[arg(default_value = "SELECT * FROM input")]
+        query: String,
     },
 }
 
@@ -47,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Query {
             resource_type,
             account,
-        } => query::query(resource_type, account),
+            query,
+        } => query::query(resource_type.as_deref(), account.as_deref(), &query),
     }
 }
