@@ -1,4 +1,8 @@
-use std::{io::Write, pin::Pin, time::Duration};
+use std::{
+    io::{BufWriter, Write},
+    pin::Pin,
+    time::Duration,
+};
 
 use aws_config::retry::RetryConfig;
 use aws_smithy_types_convert::stream::PaginationStreamExt;
@@ -83,7 +87,7 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
         .await;
     let client = aws_sdk_config::Client::new(&config);
 
-    let mut json_file = tempfile::NamedTempFile::with_suffix(".json").unwrap();
+    let mut json_file = BufWriter::new(tempfile::NamedTempFile::with_suffix(".json").unwrap());
 
     aggregator
         .map_or_else(
@@ -116,7 +120,7 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
         })
         .await;
 
-    let json_path = json_file.into_temp_path();
+    let json_path = json_file.into_inner().unwrap().into_temp_path();
 
     let db_conn = duckdb::Connection::open(Config::get().db_path())
         .inspect_err(|e| error!(error = %e, "failed open duckdb database"))
