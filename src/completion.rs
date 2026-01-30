@@ -1,14 +1,18 @@
+use clap::CommandFactory;
 use clap_complete::{CompletionCandidate, engine::ValueCandidates};
 
+use crate::cli::Cli;
 use crate::config::Config;
 
 fn query_results_candidates(query: &str) -> Vec<clap_complete::CompletionCandidate> {
-    // TODO: Config won't behave as expected because we must pass in a value that is derived from
-    // the original flags of the command. Flags from the parent command are not passed to the
-    // completer binary. Might need to implement custom completer instead of the default clap
-    // dynamic completer (although dynamic completion isn't working right now anyway so I'm not
-    // going to bother thinking too much about this for now)
-    duckdb::Connection::open(Config::init("db").db_path())
+    // The args of the candidate command are passed to the binary for completion.
+    // In a completion context the args look like:
+    // ["aws-config-dump" "--" "aws-config-dump" ... <the rest>]
+    // Skip the first two, and parse the candidate cli for completion
+    let arg_matches = Cli::command().get_matches_from(std::env::args_os().skip(2));
+    let db_name = arg_matches.get_one::<String>("db_name").unwrap();
+
+    duckdb::Connection::open(Config::init(db_name).db_path())
         .unwrap()
         .prepare(query)
         .unwrap()

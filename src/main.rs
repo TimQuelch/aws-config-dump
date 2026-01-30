@@ -1,43 +1,14 @@
-use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::{ArgValueCandidates, CompleteEnv};
+use clap::{CommandFactory, Parser};
+use clap_complete::CompleteEnv;
+
+use cli::{Cli, Command};
 
 mod build;
+mod cli;
 mod completion;
 mod config;
 mod query;
 mod util;
-
-#[derive(Parser)]
-#[command(version, about, long_about = None)]
-pub struct Cli {
-    #[command(subcommand)]
-    command: Command,
-
-    #[arg(short, long, global = true, default_value = "db")]
-    db_name: String,
-}
-
-#[derive(Subcommand)]
-pub enum Command {
-    /// Build the offline database from AWS Config
-    Build {
-        /// Use cross-account aggregated data
-        #[arg(short, long)]
-        aggregator_name: Option<String>,
-    },
-    /// Query the offline database
-    Query {
-        /// Filter on resource type
-        #[arg(short, long, add = ArgValueCandidates::new(completion::ResourceTypeCandidates::new()))]
-        resource_type: Option<String>,
-        /// Filter on account
-        #[arg(short, long, add = ArgValueCandidates::new(completion::AccountCandidates::new()))]
-        account: Option<String>,
-        /// Query
-        #[arg(default_value = "SELECT * FROM input")]
-        query: String,
-    },
-}
 
 #[tokio::main()]
 async fn main() -> anyhow::Result<()> {
