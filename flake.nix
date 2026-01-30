@@ -29,6 +29,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
+          nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.duckdb ];
         };
 
@@ -38,12 +39,27 @@
           commonArgs
           // {
             inherit cargoArtifacts;
-            nativeBuildInputs = [ pkgs.installShellFiles ];
+            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+              pkgs.installShellFiles
+              pkgs.makeBinaryWrapper
+            ];
             postInstall = ''
-              installShellCompletion --cmd aws-config-dump \
-                --bash <(COMPLETE=bash $out/bin/aws-config-dump) \
-                --zsh <(COMPLETE=zsh $out/bin/aws-config-dump) \
-                --fish <(COMPLETE=fish $out/bin/aws-config-dump)
+              wrapProgram $out/bin/aws-config-dump \
+                  --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.duckdb ]}
+
+              installShellCompletion \
+                  --cmd aws-config-dump \
+                  --bash <(PATH=$out/bin COMPLETE=bash aws-config-dump) \
+                  --zsh <(PATH=$out/bin COMPLETE=zsh aws-config-dump) \
+                  --fish <(PATH=$out/bin COMPLETE=fish aws-config-dump)
+
+              zsh_completion=$(find $out/share/zsh -type f)
+
+              cat <<EOF >> $zsh_completion
+              if [ "\$funcstack[1]" = "_aws-config-dump" ]; then
+                  _clap_dynamic_completer_aws_config_dump
+              fi
+              EOF
             '';
           }
         );
