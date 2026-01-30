@@ -5,7 +5,7 @@ use crate::util;
 
 /// Query the database
 ///
-/// Calls the duckdb CLI instead of using the SDK so we don't need to implement CSV formatting here
+/// Calls the duckdb CLI instead of using the SDK so we don't need to implement TSV formatting here
 pub fn query(
     resource_type: Option<&str>,
     account: Option<&str>,
@@ -26,9 +26,10 @@ pub fn query(
 
     Command::new("duckdb")
         .args([
-            "-csv",
             "-readonly",
             "-safe",
+            "-cmd",
+            ".mode tabs",
             &Config::get().db_path().to_string_lossy(),
             &final_query,
         ])
