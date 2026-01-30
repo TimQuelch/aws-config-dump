@@ -6,6 +6,7 @@ use duckdb::params;
 use futures::{Stream, future, stream::StreamExt};
 use tracing::{error, info, warn};
 
+use crate::config::Config;
 use crate::util;
 
 const QUERY: &str = concat!(
@@ -117,7 +118,7 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
 
     let json_path = json_file.into_temp_path();
 
-    let db_conn = duckdb::Connection::open("./db.duckdb")
+    let db_conn = duckdb::Connection::open(Config::get().db_path())
         .inspect_err(|e| error!(error = %e, "failed open duckdb database"))
         .unwrap();
 

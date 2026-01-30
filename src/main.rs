@@ -3,6 +3,7 @@ use clap_complete::{ArgValueCandidates, CompleteEnv};
 
 mod build;
 mod completion;
+mod config;
 mod query;
 mod util;
 
@@ -11,6 +12,9 @@ mod util;
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
+
+    #[arg(short, long, global = true, default_value = "db")]
+    db_name: String,
 }
 
 #[derive(Subcommand)]
@@ -45,6 +49,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     let cli = Cli::parse();
+
+    config::Config::init(cli.db_name);
 
     match cli.command {
         Command::Build { aggregator_name } => build::build_database(aggregator_name).await,

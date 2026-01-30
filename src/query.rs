@@ -1,5 +1,7 @@
-use crate::util;
 use std::process::Command;
+
+use crate::config::Config;
+use crate::util;
 
 /// Query the database
 ///
@@ -22,7 +24,13 @@ pub fn query(
     );
 
     Command::new("duckdb")
-        .args(["-csv", "-readonly", "-safe", "db.duckdb", &final_query])
+        .args([
+            "-csv",
+            "-readonly",
+            "-safe",
+            &Config::get().db_path().to_string_lossy(),
+            &final_query,
+        ])
         .spawn()?
         .wait()?;
 
