@@ -29,8 +29,11 @@ pub enum Command {
         /// Filter on account
         #[arg(short, long, add = ArgValueCandidates::new(completion::AccountCandidates::new()))]
         account: Option<String>,
+        /// Select fields
+        #[arg(short, long, num_args(1..) , add = ArgValueCandidates::new(completion::FieldCandidates::new()))]
+        fields: Option<Vec<String>>,
         /// Query
-        #[arg(default_value = "SELECT * FROM input")]
+        #[arg(short, long, default_value = "SELECT * FROM input")]
         query: String,
     },
 }

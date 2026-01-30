@@ -9,17 +9,18 @@ use crate::util;
 pub fn query(
     resource_type: Option<&str>,
     account: Option<&str>,
+    fields: Option<Vec<String>>,
     query: &str,
 ) -> anyhow::Result<()> {
     let table = resource_type.map_or_else(|| "resources".to_string(), util::resource_table_name);
-
+    let columns = fields.map_or_else(|| "*".to_string(), |v| v.join(","));
     let account_clause = account.map_or_else(String::new, |account| {
         format!("WHERE accountId == {account}")
     });
 
     let final_query = format!(
         "CREATE OR REPLACE TEMPORARY VIEW input AS
-            SELECT * FROM query_table('{table}') {account_clause};
+            SELECT {columns} FROM query_table('{table}') {account_clause};
         {query};",
     );
 
