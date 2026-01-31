@@ -4,7 +4,7 @@ use aws_config::retry::RetryConfig;
 use aws_smithy_types_convert::stream::PaginationStreamExt;
 use duckdb::params;
 use futures::{Stream, future, stream::StreamExt};
-use tempfile::TempPath;
+use tempfile::{NamedTempFile, TempPath};
 use tokio::{
     io::AsyncWriteExt,
     sync::mpsc,
@@ -195,52 +195,71 @@ fn build_duckdb_db(json_path: &TempPath) -> anyhow::Result<()> {
     )?;
 
     db_conn.execute_batch(concat!(
+        "ALTER TABLE resources ALTER tags SET DATA TYPE MAP(VARCHAR, VARCHAR) USING map_from_entries(tags);",
         "CREATE OR REPLACE VIEW resourceTypes AS SELECT DISTINCT resourceType FROM resources;",
         "CREATE OR REPLACE VIEW accounts AS SELECT DISTINCT accountId FROM resources;",
         "CREATE OR REPLACE VIEW regions AS SELECT DISTINCT awsRegion FROM resources;",
     ))?;
 
     db_conn
-        .prepare_cached(
-            "SELECT
-                resourceType,
-                json_group_structure(configuration) AS conf_schema,
-                json_group_structure(supplementaryConfiguration) AS supp_schema
-                FROM resources GROUP BY resourceType;",
-        )?
-        .query_map([], |row| {
-            Ok((
-                row.get("resourceType")?,
-                row.get("conf_schema")?,
-                row.get("supp_schema")?,
-            ))
-        })?
+        .prepare_cached("SELECT DISTINCT resourceType FROM resources;")?
+        .query_map([], |row| row.get("resourceType"))?
         .filter_map(|result| {
             result
-                .inspect_err(|e| error!(err = %e, "failed to query schema"))
+                .inspect_err(|e| error!(err = %e, "failed to query resource type"))
                 .ok()
         })
-        .for_each(
-            |(resource_type, conf_schema, supp_schema): (String, String, String)| {
-                let table_name = util::resource_table_name(&resource_type);
+        .for_each(|resource_type: String| {
+            let table_name = util::resource_table_name(&resource_type);
 
-                let result = db_conn.execute(
-                    format!(
-                        "CREATE OR REPLACE TABLE {table_name} AS SELECT
-                        * EXCLUDE (configuration, supplementaryConfiguration),
-                        unnest(json_transform(configuration, ?)),
-                        json_transform(supplementaryConfiguration, ?) as extra,
-                        FROM resources WHERE resourceType == ?;"
-                    )
-                    .as_str(),
-                    params![conf_schema, supp_schema, &resource_type],
-                );
-                match result {
-                    Ok(_) => info!(resource_type, "created resource table"),
-                    Err(err) => error!(resource_type, %err, "failed to create resource table"),
+            let file = NamedTempFile::with_suffix(".json")
+                .unwrap()
+                .into_temp_path();
+            let filename = file.to_string_lossy();
+
+            match db_conn.execute(
+                format!(
+                    "COPY (
+                        SELECT
+                            accountId,
+                            resourceType,
+                            resourceId,
+                            configuration,
+                            supplementaryConfiguration
+                        FROM resources
+                        WHERE resourceType = ?
+                    ) TO '{filename}';"
+                )
+                .as_str(),
+                params![&resource_type],
+            ) {
+                Ok(_) => info!(resource_type, "created temporary resource json file"),
+                Err(err) => {
+                    error!(resource_type, %err, "failed to create temporary resource json file");
                 }
-            },
-        );
+            }
+
+            match db_conn.execute(
+                format!(
+                    "CREATE OR REPLACE TABLE {table_name} AS
+                        SELECT
+                            r.* EXCLUDE(configuration, supplementaryConfiguration),
+                            unnest(j.configuration),
+                            j.supplementaryConfiguration
+                        FROM
+                            read_json(?) j
+                            JOIN resources r
+                                ON j.accountId = r.accountId
+                                AND j.resourceType = r.resourceType
+                                AND j.resourceId = r.resourceId;"
+                )
+                .as_str(),
+                params![filename],
+            ) {
+                Ok(_) => info!(resource_type, "created resource table"),
+                Err(err) => error!(resource_type, %err, "failed to create resource table"),
+            }
+        });
 
     Ok(())
 }
