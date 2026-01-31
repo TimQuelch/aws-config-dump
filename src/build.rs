@@ -1,13 +1,15 @@
-use std::{
-    io::{BufWriter, Write},
-    pin::Pin,
-    time::Duration,
-};
+use std::{pin::Pin, time::Duration};
 
 use aws_config::retry::RetryConfig;
 use aws_smithy_types_convert::stream::PaginationStreamExt;
 use duckdb::params;
 use futures::{Stream, future, stream::StreamExt};
+use tempfile::TempPath;
+use tokio::{
+    io::AsyncWriteExt,
+    sync::mpsc,
+    task::{self, JoinHandle},
+};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
@@ -87,41 +89,81 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
         .await;
     let client = aws_sdk_config::Client::new(&config);
 
-    let mut json_file = BufWriter::new(tempfile::NamedTempFile::with_suffix(".json").unwrap());
+    let (file_tx, file_handle) = temp_file_writer();
 
     aggregator
         .map_or_else(
             || select_resource_config_stream(&client),
             |aggregator| select_aggregate_resource_config_stream(&client, aggregator),
         )
-        .for_each(|mut resource| {
-            // AWS is frustratingly inconsistent. I've found that there are some resources which will
-            // return an empty object as the tag field instead of an empty array. So far I've
-            // noticed AWS::Config::ConformancePackCompliance does this. Here we work around this by
-            // parsing the JSON and setting tags field to an empty array if it is not already an
-            // array.
-            //
-            // If this were not the case then we could omit parsing json here and simply write
-            // directly to file.
-            let mut value: serde_json::Value = serde_json::from_str(&resource).unwrap();
-            if let Some(tags) = value.get("tags")
-                && !tags.is_array()
-            {
-                warn!(%tags, resource, "tags field is not an array, setting to empty array");
-                value
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("tags".into(), serde_json::Value::Array(vec![]));
-                resource = value.to_string();
-            }
-
-            json_file.write_all(resource.as_bytes()).unwrap();
-            future::ready(())
+        .for_each_concurrent(None, async |resource| {
+            let inner_tx = file_tx.clone();
+            task::spawn_blocking(move || process_resource_config(&inner_tx, resource))
+                .await
+                .unwrap();
         })
         .await;
 
-    let json_path = json_file.into_inner().unwrap().into_temp_path();
+    drop(file_tx);
+    let json_path = file_handle.await.unwrap();
+    task::spawn_blocking(move || build_duckdb_db(&json_path))
+        .await
+        .unwrap()
+        .unwrap();
 
+    Ok(())
+}
+
+fn temp_file_writer() -> (mpsc::Sender<String>, JoinHandle<TempPath>) {
+    let (tx, mut rx) = mpsc::channel::<String>(1024);
+
+    let file_handle = task::spawn(async move {
+        let (file, path) = task::spawn_blocking(|| tempfile::NamedTempFile::with_suffix(".json"))
+            .await
+            .unwrap()
+            .unwrap()
+            .into_parts();
+
+        let mut writer = tokio::io::BufWriter::new(tokio::fs::File::from_std(file));
+
+        while let Some(x) = rx.recv().await {
+            writer.write_all(x.as_bytes()).await.unwrap();
+        }
+
+        // Flush both the buffered writer and the underlying file
+        writer.flush().await.unwrap();
+        writer.into_inner().flush().await.unwrap();
+
+        path
+    });
+
+    (tx, file_handle)
+}
+
+fn process_resource_config(sender: &mpsc::Sender<String>, mut resource: String) {
+    // AWS is frustratingly inconsistent. I've found that there are some resources which
+    // will return an empty object as the tag field instead of an empty array. So far I've
+    // noticed AWS::Config::ConformancePackCompliance does this. Here we work around this
+    // by parsing the JSON and setting tags field to an empty array if it is not already
+    // an array.
+    //
+    // If this were not the case then we could omit parsing json here and simply write
+    // directly to file.
+    let mut value: serde_json::Value = serde_json::from_str(&resource).unwrap();
+    if let Some(tags) = value.get("tags")
+        && !tags.is_array()
+    {
+        warn!(%tags, resource, "tags field is not an array, setting to empty array");
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("tags".into(), serde_json::Value::Array(vec![]));
+        resource = value.to_string();
+    }
+    sender.blocking_send(resource).unwrap();
+}
+
+fn build_duckdb_db(json_path: &TempPath) -> anyhow::Result<()> {
     let db_conn = duckdb::Connection::open(Config::get().db_path())
         .inspect_err(|e| error!(error = %e, "failed open duckdb database"))
         .unwrap();
