@@ -20,6 +20,10 @@ pub enum Command {
         /// Use cross-account aggregated data
         #[arg(short, long)]
         aggregator_name: Option<String>,
+
+        /// Don't fetch data, only build the resource tables
+        #[arg(short, long)]
+        no_fetch: bool,
     },
     /// Query the offline database
     Query {

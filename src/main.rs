@@ -24,7 +24,10 @@ async fn main() -> anyhow::Result<()> {
     config::Config::init(cli.db_name);
 
     match cli.command {
-        Command::Build { aggregator_name } => build::build_database(aggregator_name).await,
+        Command::Build {
+            aggregator_name,
+            no_fetch,
+        } => build::build_database(aggregator_name, !no_fetch).await,
         Command::Query {
             resource_type,
             account,

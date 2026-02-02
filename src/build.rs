@@ -78,7 +78,22 @@ fn select_aggregate_resource_config_stream(
     )
 }
 
-pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
+pub async fn build_database(aggregator: Option<String>, should_fetch: bool) -> anyhow::Result<()> {
+    let json_path = if should_fetch {
+        Some(fetch_resources(aggregator).await.await.unwrap())
+    } else {
+        None
+    };
+
+    task::spawn_blocking(move || build_duckdb_db(json_path))
+        .await
+        .unwrap()
+        .unwrap();
+
+    Ok(())
+}
+
+async fn fetch_resources(aggregator: Option<String>) -> JoinHandle<TempPath> {
     let config = aws_config::from_env()
         .retry_config(
             RetryConfig::standard()
@@ -104,14 +119,7 @@ pub async fn build_database(aggregator: Option<String>) -> anyhow::Result<()> {
         })
         .await;
 
-    drop(file_tx);
-    let json_path = file_handle.await.unwrap();
-    task::spawn_blocking(move || build_duckdb_db(&json_path))
-        .await
-        .unwrap()
-        .unwrap();
-
-    Ok(())
+    file_handle
 }
 
 fn temp_file_writer() -> (mpsc::Sender<String>, JoinHandle<TempPath>) {
@@ -163,12 +171,16 @@ fn process_resource_config(sender: &mpsc::Sender<String>, mut resource: String) 
     sender.blocking_send(resource).unwrap();
 }
 
-fn build_duckdb_db(json_path: &TempPath) -> anyhow::Result<()> {
+fn build_duckdb_db(json_path: Option<TempPath>) -> anyhow::Result<()> {
     let db_conn = duckdb::Connection::open(Config::get().db_path())
         .inspect_err(|e| error!(error = %e, "failed open duckdb database"))
         .unwrap();
 
-    db_conn.execute("
+    // helps with read_json on very large tables
+    db_conn.execute_batch("SET preserve_insertion_order = false")?;
+
+    if let Some(json_path) = json_path {
+        db_conn.execute("
         CREATE OR REPLACE TABLE resources (
             arn VARCHAR,
             accountId VARCHAR,
@@ -189,13 +201,16 @@ fn build_duckdb_db(json_path: &TempPath) -> anyhow::Result<()> {
         [],
     )?;
 
-    db_conn.execute(
-        "COPY resources FROM ? (AUTO_DETECT true);",
-        [json_path.to_str().unwrap()],
-    )?;
+        db_conn.execute(
+            "COPY resources FROM ? (AUTO_DETECT true);",
+            [json_path.to_str().unwrap()],
+        )?;
+
+        db_conn.execute("ALTER TABLE resources ALTER tags SET DATA TYPE MAP(VARCHAR, VARCHAR) USING map_from_entries(tags);",
+            [],)?;
+    }
 
     db_conn.execute_batch(concat!(
-        "ALTER TABLE resources ALTER tags SET DATA TYPE MAP(VARCHAR, VARCHAR) USING map_from_entries(tags);",
         "CREATE OR REPLACE VIEW resourceTypes AS SELECT DISTINCT resourceType FROM resources;",
         "CREATE OR REPLACE VIEW accounts AS SELECT DISTINCT accountId FROM resources;",
         "CREATE OR REPLACE VIEW regions AS SELECT DISTINCT awsRegion FROM resources;",
