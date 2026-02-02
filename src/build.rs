@@ -161,7 +161,12 @@ fn process_resource_config(sender: &mpsc::Sender<String>, mut resource: String) 
     if let Some(tags) = value.get("tags")
         && !tags.is_array()
     {
-        warn!(%tags, resource, "tags field is not an array, setting to empty array");
+        warn!(
+            %tags,
+            resourceId = %value.get("resourceId").unwrap_or(&serde_json::Value::Null),
+            arn = %value.get("arn").unwrap_or(&serde_json::Value::Null),
+            "tags field is not an array, setting to empty array"
+        );
         value
             .as_object_mut()
             .unwrap()
