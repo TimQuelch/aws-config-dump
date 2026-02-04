@@ -1,52 +1,18 @@
-use std::{
-    collections::{HashMap, HashSet},
-    pin::Pin,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 
 use aws_config::retry::RetryConfig;
-use aws_sdk_config::types::{
-    AggregateResourceIdentifier, BaseConfigurationItem, ResourceCountGroupKey, ResourceKey,
-    ResourceType,
-};
-use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
 use duckdb::params;
-use futures::{
-    Stream,
-    stream::{self, StreamExt},
-};
-use serde_json::json;
 use tempfile::{NamedTempFile, TempPath};
 use tokio::{
     io::AsyncWriteExt,
-    sync::{Semaphore, mpsc},
+    sync::mpsc,
     task::{self, JoinHandle},
 };
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::config::Config;
+use crate::config_fetch_client::{ConfigFetchClient, DispatchingClient};
 use crate::util;
-
-const QUERY: &str = concat!(
-    "SELECT ",
-    "arn,",
-    "accountId,",
-    "awsRegion,",
-    "resourceType,",
-    "resourceId,",
-    "resourceName,",
-    "availabilityZone,",
-    "resourceCreationTime,",
-    "configurationItemCaptureTime,",
-    "configurationItemStatus,",
-    "configurationStateId,",
-    "tags,",
-    "relationships,",
-    "configuration,",
-    "supplementaryConfiguration;",
-);
 
 pub async fn build_database(aggregator: Option<String>, should_fetch: bool) -> anyhow::Result<()> {
     let json_path = if should_fetch {
@@ -63,317 +29,6 @@ pub async fn build_database(aggregator: Option<String>, should_fetch: bool) -> a
     Ok(())
 }
 
-fn select_resource_config_stream(
-    client: &aws_sdk_config::Client,
-) -> Pin<Box<dyn Stream<Item = String>>> {
-    Box::pin(
-        client
-            .select_resource_config()
-            .expression(QUERY)
-            .into_paginator()
-            .items()
-            .send()
-            .into_stream_03x()
-            .filter_map(async |response| {
-                response
-                    .inspect_err(|err| error!(err = %err, "API error"))
-                    .ok()
-            }),
-    )
-}
-
-fn select_aggregate_resource_config_stream(
-    client: &aws_sdk_config::Client,
-    aggregator: &str,
-) -> Pin<Box<dyn Stream<Item = String>>> {
-    Box::pin(
-        client
-            .select_aggregate_resource_config()
-            .configuration_aggregator_name(aggregator)
-            .expression(QUERY)
-            .into_paginator()
-            .items()
-            .send()
-            .into_stream_03x()
-            .filter_map(async |response| {
-                response
-                    .inspect_err(|err| error!(err = %err, "API error"))
-                    .ok()
-            }),
-    )
-}
-
-fn get_discovered_resource_counts_stream(
-    client: &aws_sdk_config::Client,
-) -> Pin<Box<dyn Stream<Item = (ResourceType, i64)>>> {
-    Box::pin(
-        client
-            .get_discovered_resource_counts()
-            .into_paginator()
-            .send()
-            .into_stream_03x()
-            .filter_map(async |response| {
-                response
-                    .inspect_err(|err| error!(err = %err, "API error"))
-                    .ok()
-            })
-            .flat_map(|page| {
-                stream::iter(
-                    page.resource_counts()
-                        .iter()
-                        .map(|resource_count| {
-                            (
-                                resource_count.resource_type().unwrap().clone(),
-                                resource_count.count(),
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            }),
-    )
-}
-
-fn get_aggregate_discovered_resource_counts_stream(
-    client: &aws_sdk_config::Client,
-    aggregator: &str,
-) -> Pin<Box<dyn Stream<Item = (ResourceType, i64)>>> {
-    Box::pin(
-        client
-            .get_aggregate_discovered_resource_counts()
-            .configuration_aggregator_name(aggregator)
-            .group_by_key(ResourceCountGroupKey::ResourceType)
-            .into_paginator()
-            .send()
-            .into_stream_03x()
-            .filter_map(async |response| {
-                response
-                    .inspect_err(|err| error!(err = %err, "API error"))
-                    .ok()
-            })
-            .flat_map(|page| {
-                stream::iter(
-                    page.grouped_resource_counts()
-                        .iter()
-                        .map(|resource_count| {
-                            (
-                                ResourceType::from(resource_count.group_name()),
-                                resource_count.resource_count(),
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            }),
-    )
-}
-
-fn item_to_json(item: &BaseConfigurationItem) -> serde_json::Value {
-    let configuration = item.configuration().map(|x| {
-        serde_json::from_str::<serde_json::Value>(x).unwrap_or(serde_json::Value::String(x.into()))
-    });
-    let supplementary_configuration =
-        item.supplementary_configuration()
-            .map_or_else(serde_json::Map::new, |supp_conf_map| {
-                supp_conf_map
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            k.clone(),
-                            serde_json::from_str::<serde_json::Value>(v)
-                                .unwrap_or(serde_json::Value::String(v.into())),
-                        )
-                    })
-                    .collect()
-            });
-
-    // These aren't returned with batch-get so we use default empty values
-    let tags = serde_json::Value::Array(vec![]);
-    let relationships = serde_json::Value::Array(vec![]);
-
-    json!({
-        "arn": item.arn(),
-        "accountId": item.account_id(),
-        "awsRegion": item.aws_region(),
-        "resourceType": item.resource_type().map(aws_sdk_config::types::ResourceType::as_str),
-        "resourceId": item.resource_id(),
-        "resourceName": item.resource_name(),
-        "availabilityZone": item.availability_zone(),
-        "resourceCreationTime": item.resource_creation_time().map(|x| x.to_chrono_utc().unwrap()),
-        "configurationItemCaptureTime": item.configuration_item_capture_time().map(|x| x.to_chrono_utc().unwrap()),
-        "configurationItemStatus": item.configuration_item_status().map(aws_sdk_config::types::ConfigurationItemStatus::as_str),
-        "configurationStateId": item.configuration_state_id(),
-        "tags": tags,
-        "relationships": relationships,
-        "configuration": configuration,
-        "supplementaryConfiguration":supplementary_configuration,
-    })
-}
-
-fn get_non_selectable_resources(
-    client: &aws_sdk_config::Client,
-    file_tx: &mpsc::Sender<String>,
-    resource_types: impl IntoIterator<Item = ResourceType>,
-) {
-    let (batch_tx, batch_rx) = mpsc::channel::<ResourceKey>(256); // single batch is 100
-
-    {
-        let client = client.clone();
-        let file_tx = file_tx.clone();
-        tokio::spawn(async move {
-            ReceiverStream::new(batch_rx)
-                .chunks(100)
-                .for_each(async |batch| {
-                    let client = client.clone();
-                    let file_tx = file_tx.clone();
-                    tokio::spawn(async move {
-                        info!(batch_length = batch.len(), "getting batch of resources");
-
-                        let response = client
-                            .batch_get_resource_config()
-                            .set_resource_keys(Some(batch))
-                            .send()
-                            .await
-                            .unwrap();
-
-                        if !response.unprocessed_resource_keys().is_empty() {
-                            warn!(
-                                num_to_reprocess = response.unprocessed_resource_keys().len(),
-                                "reprocessing failed batch items"
-                            );
-                            // for ri in response.unprocessed_resource_keys() {
-                            //     batch_tx.send(ri.clone()).await.unwrap();
-                            // }
-                        }
-
-                        for item in response.base_configuration_items() {
-                            let json = item_to_json(item);
-                            file_tx.send(json.to_string()).await.unwrap();
-                        }
-                    });
-                })
-                .await;
-        });
-    }
-
-    let list_limiter = Arc::new(Semaphore::new(4));
-
-    resource_types.into_iter().for_each(move |resource_type| {
-        let client = client.clone();
-        let batch_tx = batch_tx.clone();
-        let list_limiter = list_limiter.clone();
-        tokio::spawn(async move {
-            let _permit = list_limiter.acquire().await.unwrap();
-            info!(%resource_type, "listing resource type");
-            client
-                .list_discovered_resources()
-                .resource_type(resource_type)
-                .into_paginator()
-                .items()
-                .send()
-                .into_stream_03x()
-                .filter_map(async |response| {
-                    response
-                        .inspect_err(|err| error!(err = %err, "API error"))
-                        .ok()
-                })
-                .for_each(async |resource_identifier| {
-                    batch_tx
-                        .send(
-                            ResourceKey::builder()
-                                .resource_id(resource_identifier.resource_id().unwrap())
-                                .resource_type(resource_identifier.resource_type().unwrap().clone())
-                                .build()
-                                .unwrap(),
-                        )
-                        .await
-                        .unwrap();
-                })
-                .await;
-        });
-    });
-}
-
-fn get_aggregate_non_selectable_resources(
-    client: &aws_sdk_config::Client,
-    file_tx: &mpsc::Sender<String>,
-    resource_types: impl IntoIterator<Item = ResourceType>,
-    aggregator: &str,
-) {
-    let (batch_tx, batch_rx) = mpsc::channel::<AggregateResourceIdentifier>(256); // single batch is 100
-
-    {
-        let client = client.clone();
-        let aggregator = aggregator.to_owned();
-        let file_tx = file_tx.clone();
-        tokio::spawn(async move {
-            ReceiverStream::new(batch_rx)
-                .chunks(100)
-                .for_each(async |batch| {
-                    let aggregator = aggregator.clone();
-                    let client = client.clone();
-                    let file_tx = file_tx.clone();
-                    tokio::spawn(async move {
-                        info!(batch_length = batch.len(), "getting batch of resources");
-
-                        let response = client
-                            .batch_get_aggregate_resource_config()
-                            .configuration_aggregator_name(&aggregator)
-                            .set_resource_identifiers(Some(batch))
-                            .send()
-                            .await
-                            .unwrap();
-
-                        if !response.unprocessed_resource_identifiers().is_empty() {
-                            warn!(
-                                num_to_reprocess =
-                                    response.unprocessed_resource_identifiers().len(),
-                                "failed batch items"
-                            );
-                            // for ri in response.unprocessed_resource_identifiers() {
-                            //     batch_tx.send(ri.clone()).await.unwrap();
-                            // }
-                        }
-
-                        for item in response.base_configuration_items() {
-                            let json = item_to_json(item);
-                            file_tx.send(json.to_string()).await.unwrap();
-                        }
-                    });
-                })
-                .await;
-        });
-    }
-
-    let list_limiter = Arc::new(Semaphore::new(4));
-
-    resource_types.into_iter().for_each(move |resource_type| {
-        let client = client.clone();
-        let batch_tx = batch_tx.clone();
-        let aggregator = aggregator.to_owned();
-        let list_limiter = list_limiter.clone();
-        tokio::spawn(async move {
-            let _permit = list_limiter.acquire().await.unwrap();
-            info!(%resource_type, "listing resource type");
-            client
-                .list_aggregate_discovered_resources()
-                .configuration_aggregator_name(&aggregator)
-                .resource_type(resource_type)
-                .into_paginator()
-                .items()
-                .send()
-                .into_stream_03x()
-                .filter_map(async |response| {
-                    response
-                        .inspect_err(|err| error!(err = %err, "API error"))
-                        .ok()
-                })
-                .for_each(async |resource_identifier| {
-                    batch_tx.send(resource_identifier).await.unwrap();
-                })
-                .await;
-        });
-    });
-}
-
 async fn fetch_resources(aggregator: Option<String>) -> JoinHandle<TempPath> {
     let config = aws_config::from_env()
         .retry_config(
@@ -385,55 +40,21 @@ async fn fetch_resources(aggregator: Option<String>) -> JoinHandle<TempPath> {
         .load()
         .await;
     let client = aws_sdk_config::Client::new(&config);
+    let config_client = DispatchingClient::new(&client, aggregator.clone());
 
-    let (file_tx, file_handle) = temp_file_writer();
-
-    let type_counts: HashMap<_, _> = aggregator
-        .as_ref()
-        .map_or_else(
-            || get_discovered_resource_counts_stream(&client),
-            |aggregator| get_aggregate_discovered_resource_counts_stream(&client, aggregator),
-        )
-        .collect()
-        .await;
-
+    let type_counts = config_client.get_resource_counts().await;
     let all_types: HashSet<_> = type_counts.keys().cloned().collect();
 
-    let seen_set = Arc::new(RwLock::new(HashSet::<ResourceType>::new()));
-
-    aggregator
-        .as_ref()
-        .map_or_else(
-            || select_resource_config_stream(&client),
-            |aggregator| select_aggregate_resource_config_stream(&client, aggregator),
-        )
-        .for_each(async |resource| {
-            let inner_file_tx = file_tx.clone();
-            let seen_set = seen_set.clone();
-            task::spawn_blocking(move || {
-                process_resource_config(&inner_file_tx, &seen_set, resource);
-            });
-        })
+    let (file_tx, file_handle) = temp_file_writer();
+    let seen_set = config_client
+        .get_resource_configs_with_select(file_tx.clone())
         .await;
 
-    let guard = seen_set.read().unwrap();
-    let discovered_but_not_seen: HashSet<_> = all_types.difference(&guard).cloned().collect();
+    info!("fetching resources which are not available with select API");
 
-    info!(
-        ?discovered_but_not_seen,
-        "fetching resources which are not available with select API"
-    );
-
-    if let Some(aggregator) = aggregator {
-        get_aggregate_non_selectable_resources(
-            &client,
-            &file_tx,
-            discovered_but_not_seen,
-            &aggregator,
-        );
-    } else {
-        get_non_selectable_resources(&client, &file_tx, discovered_but_not_seen);
-    }
+    config_client
+        .get_resource_configs_with_batch(file_tx, all_types.difference(&seen_set).cloned())
+        .await;
 
     file_handle
 }
@@ -463,46 +84,6 @@ fn temp_file_writer() -> (mpsc::Sender<String>, JoinHandle<TempPath>) {
     });
 
     (tx, file_handle)
-}
-
-fn process_resource_config(
-    file_sender: &mpsc::Sender<String>,
-    seen_map: &Arc<RwLock<HashSet<ResourceType>>>,
-    mut resource: String,
-) {
-    // AWS is frustratingly inconsistent. I've found that there are some resources which
-    // will return an empty object as the tag field instead of an empty array. So far I've
-    // noticed AWS::Config::ConformancePackCompliance does this. Here we work around this
-    // by parsing the JSON and setting tags field to an empty array if it is not already
-    // an array.
-    //
-    // If this were not the case then we could omit parsing json here and simply write
-    // directly to file.
-    let mut value: serde_json::Value = serde_json::from_str(&resource).unwrap();
-    if let Some(tags) = value.get("tags")
-        && !tags.is_array()
-    {
-        warn!(
-            %tags,
-            resourceId = %value.get("resourceId").unwrap_or(&serde_json::Value::Null),
-            arn = %value.get("arn").unwrap_or(&serde_json::Value::Null),
-            "tags field is not an array, setting to empty array"
-        );
-        value
-            .as_object_mut()
-            .unwrap()
-            .insert("tags".into(), serde_json::Value::Array(vec![]));
-        resource = value.to_string();
-    }
-
-    let resource_type = ResourceType::from(value.get("resourceType").unwrap().as_str().unwrap());
-    if !seen_map.read().unwrap().contains(&resource_type)
-        && seen_map.write().unwrap().insert(resource_type.clone())
-    {
-        info!(%resource_type, "seen new resource type");
-    }
-
-    file_sender.blocking_send(resource).unwrap();
 }
 
 fn build_duckdb_db(json_path: Option<TempPath>) -> anyhow::Result<()> {

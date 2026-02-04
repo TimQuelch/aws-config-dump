@@ -7,6 +7,7 @@ mod build;
 mod cli;
 mod completion;
 mod config;
+mod config_fetch_client;
 mod query;
 mod util;
 
