@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::anyhow;
 use aws_config::retry::RetryConfig;
 use chrono::{DateTime, Days, Utc};
 use duckdb::params;
@@ -12,7 +13,7 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::config_fetch_client::{ConfigFetchClient, DispatchingClient};
@@ -39,8 +40,8 @@ pub async fn build_database(
             Some(cutoff)
         };
 
-        let json_path = fetch_resources(aggregator, cutoff).await?;
-        build_resources_table(&db_conn, &json_path)?;
+        let (resources_path, identifiers_path) = fetch_resources(aggregator, cutoff).await?;
+        build_resources_table(&db_conn, &resources_path, &identifiers_path)?;
     }
 
     build_derived_tables(&db_conn)?;
@@ -50,7 +51,7 @@ pub async fn build_database(
 async fn fetch_resources(
     aggregator: Option<String>,
     cutoff: Option<DateTime<Utc>>,
-) -> anyhow::Result<TempPath> {
+) -> anyhow::Result<(TempPath, TempPath)> {
     let config = aws_config::from_env()
         .retry_config(
             RetryConfig::standard()
@@ -61,7 +62,15 @@ async fn fetch_resources(
         .load()
         .await;
     let client = aws_sdk_config::Client::new(&config);
-    let config_client = DispatchingClient::new(&client, aggregator.clone());
+
+    let account_id = aws_sdk_sts::Client::new(&config)
+        .get_caller_identity()
+        .send()
+        .await?
+        .account
+        .ok_or(anyhow!("could not get caller identity"))?;
+
+    let config_client = DispatchingClient::new(&client, aggregator.clone(), account_id);
 
     let type_counts = config_client.get_resource_counts().await;
     let all_types: HashSet<_> = type_counts.keys().cloned().collect();
@@ -70,18 +79,29 @@ async fn fetch_resources(
     let selectable_types: HashSet<_> = selectable_type_counts.keys().cloned().collect();
     let unselectable_types: HashSet<_> = all_types.difference(&selectable_types).cloned().collect();
 
-    let (file_tx, file_handle) = temp_file_writer();
+    let (resources_tx, resources_handle) = temp_file_writer();
     config_client
-        .get_resource_configs_with_select(file_tx.clone(), cutoff)
+        .get_resource_configs_with_select(resources_tx.clone(), cutoff)
         .await;
 
     info!("fetching resources which are not available with select API");
 
     config_client
-        .get_resource_configs_with_batch(file_tx, unselectable_types.into_iter(), cutoff)
+        .get_resource_configs_with_batch(resources_tx, unselectable_types.into_iter(), cutoff)
         .await;
 
-    file_handle.await.map_err(std::convert::Into::into)
+    info!("fetching all resource identifiers to determine which have been deleted");
+
+    let (identifiers_file_tx, identifiers_handle) = temp_file_writer();
+
+    config_client
+        .get_resource_identifiers_with_batch(identifiers_file_tx, all_types.into_iter())
+        .await;
+
+    let resources_path = resources_handle.await?;
+    let identifiers_path = identifiers_handle.await?;
+
+    Ok((resources_path, identifiers_path))
 }
 
 fn temp_file_writer() -> (mpsc::Sender<String>, JoinHandle<TempPath>) {
@@ -138,8 +158,12 @@ fn get_timestamp_cutoff(db_conn: &duckdb::Connection) -> anyhow::Result<DateTime
     Ok(max_time_in_db - Days::new(1))
 }
 
-fn build_resources_table(db_conn: &duckdb::Connection, json_path: &TempPath) -> anyhow::Result<()> {
-    db_conn.execute("
+fn build_resources_table(
+    db_conn: &duckdb::Connection,
+    resources_json_path: &TempPath,
+    identifiers_json_path: &TempPath,
+) -> anyhow::Result<()> {
+    db_conn.execute_batch("
         CREATE OR REPLACE TEMPORARY TABLE resources_temp (
             arn VARCHAR,
             accountId VARCHAR,
@@ -156,19 +180,41 @@ fn build_resources_table(db_conn: &duckdb::Connection, json_path: &TempPath) -> 
             relationships STRUCT(relationshipName VARCHAR, resourceType VARCHAR, resourceId VARCHAR, resourceName VARCHAR)[],
             configuration JSON,
             supplementaryConfiguration JSON,
+        );
+        CREATE OR REPLACE TEMPORARY TABLE identifiers_temp (
+            accountId VARCHAR,
+            resourceType VARCHAR,
+            resourceId VARCHAR,
         );",
-        [],
     )?;
 
     db_conn.execute(
         "COPY resources_temp FROM ? (AUTO_DETECT true);",
-        [json_path.to_str().unwrap()],
+        [resources_json_path.to_str().unwrap()],
     )?;
 
-    let count: i64 =
+    let new_configs_count: i64 =
         db_conn.query_row("SELECT count(*) FROM resources_temp;", [], |row| row.get(0))?;
 
-    info!(count, "loaded retrieved resources into database");
+    info!(
+        new_configs_count,
+        "loaded retrieved resources into database"
+    );
+
+    db_conn.execute(
+        "COPY identifiers_temp FROM ? (AUTO_DETECT true);",
+        [identifiers_json_path.to_str().unwrap()],
+    )?;
+
+    let all_identifiers_count: i64 =
+        db_conn.query_row("SELECT count(*) FROM identifiers_temp;", [], |row| {
+            row.get(0)
+        })?;
+
+    info!(
+        all_identifiers_count,
+        "loaded retrieved identifiers into database"
+    );
 
     db_conn.execute_batch("
         ALTER TABLE resources_temp ALTER tags SET DATA TYPE MAP(VARCHAR, VARCHAR) USING map_from_entries(tags);
@@ -206,14 +252,23 @@ fn build_resources_table(db_conn: &duckdb::Connection, json_path: &TempPath) -> 
         .map(|x| x.unwrap())
         .for_each(|action: String| *merge_counter.entry(action).or_insert(0) += 1);
 
-    info!(
-        num_new = merge_counter.get("INSERT").unwrap_or(&0),
-        "inserted new resources"
-    );
-    info!(
-        num_updated = merge_counter.get("UPDATE").unwrap_or(&0),
-        "updated existing resources"
-    );
+    let delete_query = "
+        MERGE INTO resources
+            USING identifiers_temp
+            USING (accountId, resourceType, resourceId)
+            WHEN NOT MATCHED BY SOURCE THEN DELETE
+            RETURNING merge_action;
+    ";
+    db_conn
+        .prepare_cached(delete_query)?
+        .query_map([], |row| row.get(0))?
+        .map(|x| x.unwrap())
+        .for_each(|action: String| *merge_counter.entry(action).or_insert(0) += 1);
+
+    let get_count = |k| merge_counter.get(k).unwrap_or(&0);
+    info!(new = get_count("INSERT"), "inserted new resources");
+    info!(updated = get_count("UPDATE"), "updated existing resources");
+    info!(removed = get_count("DELETE"), "removed deleted resources");
     Ok(())
 }
 
@@ -258,7 +313,7 @@ fn build_derived_tables(db_conn: &duckdb::Connection) -> anyhow::Result<()> {
                 .as_str(),
                 params![&resource_type],
             ) {
-                Ok(_) => info!(resource_type, "created temporary resource json file"),
+                Ok(_) => debug!(resource_type, "created temporary resource json file"),
                 Err(err) => {
                     error!(resource_type, %err, "failed to create temporary resource json file");
                 }

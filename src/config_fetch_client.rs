@@ -16,7 +16,7 @@ use aws_smithy_async::future::pagination_stream::PaginationStream;
 use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
-use serde::{self, Deserialize};
+use serde::{self, Deserialize, Serialize, ser::SerializeStruct};
 use tokio::{
     sync::{Semaphore, mpsc},
     task,
@@ -57,6 +57,11 @@ pub trait ConfigFetchClient {
         resource_types: impl Iterator<Item = ResourceType>,
         cutoff: Option<DateTime<Utc>>,
     );
+    async fn get_resource_identifiers_with_batch(
+        &self,
+        file_tx: mpsc::Sender<String>,
+        resource_types: impl Iterator<Item = ResourceType>,
+    );
 }
 
 trait ConfigFetcher {
@@ -77,6 +82,7 @@ trait ConfigFetcher {
         &self,
         identifiers: Vec<Self::Identifier>,
     ) -> impl Future<Output = Result<impl BatchResponse + Send, impl Error>> + Send;
+    fn serialize_identifier(&self, identifier: Self::Identifier) -> String;
 }
 
 trait ResourceCountPage {
@@ -100,6 +106,7 @@ enum DispatchTarget {
 #[derive(Clone)]
 struct AccountFetcher {
     client: aws_sdk_config::Client,
+    account_id: String,
 }
 
 #[derive(Clone)]
@@ -116,13 +123,45 @@ struct ResourceCountWithSelectResultRow<'a> {
     count: i64,
 }
 
+struct WrappedAggregateResourceIdentifier(AggregateResourceIdentifier);
+
+impl Serialize for WrappedAggregateResourceIdentifier {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("Identifier", 3)?;
+        state.serialize_field("resourceType", self.0.resource_type.as_str())?;
+        state.serialize_field("accountId", self.0.source_account_id())?;
+        state.serialize_field("resourceId", self.0.resource_id())?;
+        state.end()
+    }
+}
+
+struct WrappedResourceIdentifier<'a> {
+    inner: ResourceIdentifier,
+    account_id: &'a str,
+}
+
+impl Serialize for WrappedResourceIdentifier<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("Identifier", 3)?;
+        state.serialize_field("resourceType", self.inner.resource_type().unwrap().as_str())?;
+        state.serialize_field("accountId", self.account_id)?;
+        state.serialize_field("resourceId", self.inner.resource_id().unwrap())?;
+        state.end()
+    }
+}
+
 impl DispatchingClient {
-    pub fn new(client: &aws_sdk_config::Client, aggregator: Option<String>) -> Self {
+    pub fn new(
+        client: &aws_sdk_config::Client,
+        aggregator: Option<String>,
+        account_id: impl Into<String>,
+    ) -> Self {
         Self {
             fetcher: aggregator.map_or_else(
                 || {
                     DispatchTarget::Account(AccountFetcher {
                         client: client.clone(),
+                        account_id: account_id.into(),
                     })
                 },
                 |aggregator| {
@@ -164,6 +203,13 @@ impl ConfigFetchClient for DispatchingClient {
             file_tx: mpsc::Sender<String>,
             resource_types: impl Iterator<Item = ResourceType>,
             cutoff: Option<DateTime<Utc>>
+        )
+    );
+
+    dispatch!(
+        get_resource_identifiers_with_batch(
+            file_tx: mpsc::Sender<String>,
+            resource_types: impl Iterator<Item = ResourceType>
         )
     );
 }
@@ -299,6 +345,39 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             });
         });
     }
+
+    async fn get_resource_identifiers_with_batch(
+        &self,
+        file_tx: mpsc::Sender<String>,
+        resource_types: impl Iterator<Item = ResourceType>,
+    ) {
+        let list_limiter = Arc::new(Semaphore::new(8));
+
+        resource_types.for_each(|resource_type| {
+            let file_tx = file_tx.clone();
+            let list_limiter = list_limiter.clone();
+            let new_self = self.clone();
+            tokio::spawn(async move {
+                let _permit = list_limiter.acquire().await.unwrap();
+                info!(%resource_type, "listing resource type");
+                new_self
+                    .list_discovered_resources_call(resource_type)
+                    .into_stream_03x()
+                    .filter_map(async |response| {
+                        response
+                            .inspect_err(|err| error!(err = %err, "API error"))
+                            .ok()
+                    })
+                    .for_each(async |resource_identifier| {
+                        file_tx
+                            .send(new_self.serialize_identifier(resource_identifier))
+                            .await
+                            .unwrap();
+                    })
+                    .await;
+            });
+        });
+    }
 }
 
 impl ConfigFetcher for AccountFetcher {
@@ -357,6 +436,14 @@ impl ConfigFetcher for AccountFetcher {
             ))
             .send()
     }
+
+    fn serialize_identifier(&self, identifier: Self::Identifier) -> String {
+        serde_json::to_string(&WrappedResourceIdentifier {
+            inner: identifier,
+            account_id: &self.account_id,
+        })
+        .unwrap()
+    }
 }
 
 impl ConfigFetcher for AggregateFetcher {
@@ -408,6 +495,10 @@ impl ConfigFetcher for AggregateFetcher {
             .configuration_aggregator_name(&self.aggregator)
             .set_resource_identifiers(Some(identifiers))
             .send()
+    }
+
+    fn serialize_identifier(&self, identifier: Self::Identifier) -> String {
+        serde_json::to_string(&WrappedAggregateResourceIdentifier(identifier)).unwrap()
     }
 }
 
