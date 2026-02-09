@@ -28,7 +28,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Build {
             aggregator_name,
             no_fetch,
-        } => build::build_database(aggregator_name, !no_fetch).await,
+            rebuild,
+        } => build::build_database(aggregator_name, !no_fetch, rebuild).await,
         Command::Query {
             resource_type,
             account,

@@ -24,6 +24,10 @@ pub enum Command {
         /// Don't fetch data, only build the resource tables
         #[arg(short, long)]
         no_fetch: bool,
+
+        /// Force re-fetching all resources
+        #[arg(short, long)]
+        rebuild: bool,
     },
     /// Query the offline database
     Query {

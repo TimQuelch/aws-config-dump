@@ -346,6 +346,7 @@ dependencies = [
  "directories",
  "duckdb",
  "futures",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1094,6 +1095,7 @@ checksum = "8685352ce688883098b61a361e86e87df66fc8c444f4a2411e884c16d5243a65"
 dependencies = [
  "arrow",
  "cast",
+ "chrono",
  "fallible-iterator",
  "fallible-streaming-iterator",
  "hashlink",

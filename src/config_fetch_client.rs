@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, error::Error, sync::Arc};
 
 use aws_sdk_config::{
     operation::{
@@ -18,10 +14,14 @@ use aws_sdk_config::{
 };
 use aws_smithy_async::future::pagination_stream::PaginationStream;
 use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
+use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
-use tokio::sync::{Semaphore, mpsc};
+use serde::{self, Deserialize};
+use tokio::{
+    sync::{Semaphore, mpsc},
+    task,
+};
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
 const QUERY: &str = concat!(
@@ -40,19 +40,22 @@ const QUERY: &str = concat!(
     "tags,",
     "relationships,",
     "configuration,",
-    "supplementaryConfiguration;",
+    "supplementaryConfiguration",
 );
 
 pub trait ConfigFetchClient {
     async fn get_resource_counts(&self) -> HashMap<ResourceType, i64>;
+    async fn get_resource_counts_with_select(&self) -> HashMap<ResourceType, i64>;
     async fn get_resource_configs_with_select(
         &self,
         file_tx: mpsc::Sender<String>,
-    ) -> HashSet<ResourceType>;
+        cutoff: Option<DateTime<Utc>>,
+    );
     async fn get_resource_configs_with_batch(
         &self,
         file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
+        cutoff: Option<DateTime<Utc>>,
     );
 }
 
@@ -62,7 +65,10 @@ trait ConfigFetcher {
     fn get_discovered_resource_counts_call(
         &self,
     ) -> PaginationStream<Result<impl ResourceCountPage, impl Error>>;
-    fn select_resource_config_call(&self) -> PaginationStream<Result<String, impl Error>>;
+    fn select_resource_config_call(
+        &self,
+        query: String,
+    ) -> PaginationStream<Result<String, impl Error>>;
     fn list_discovered_resources_call(
         &self,
         resource_type: ResourceType,
@@ -102,6 +108,14 @@ struct AggregateFetcher {
     aggregator: String,
 }
 
+#[derive(Deserialize)]
+struct ResourceCountWithSelectResultRow<'a> {
+    #[serde(rename = "resourceType")]
+    resource_type: &'a str,
+    #[serde(rename = "COUNT(*)")]
+    count: i64,
+}
+
 impl DispatchingClient {
     pub fn new(client: &aws_sdk_config::Client, aggregator: Option<String>) -> Self {
         Self {
@@ -136,16 +150,20 @@ macro_rules! dispatch {
 impl ConfigFetchClient for DispatchingClient {
     dispatch!(get_resource_counts() -> HashMap<ResourceType, i64>);
 
+    dispatch!(get_resource_counts_with_select() -> HashMap<ResourceType, i64>);
+
     dispatch!(
         get_resource_configs_with_select(
-            file_tx: mpsc::Sender<String>
-        ) -> HashSet<ResourceType>
+            file_tx: mpsc::Sender<String>,
+            cutoff: Option<DateTime<Utc>>
+        )
     );
 
     dispatch!(
         get_resource_configs_with_batch(
             file_tx: mpsc::Sender<String>,
-            resource_types: impl Iterator<Item = ResourceType>
+            resource_types: impl Iterator<Item = ResourceType>,
+            cutoff: Option<DateTime<Utc>>
         )
     );
 }
@@ -164,15 +182,39 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             .await
     }
 
+    async fn get_resource_counts_with_select(&self) -> HashMap<ResourceType, i64> {
+        let query = "SELECT resourceType, COUNT(*) GROUP BY resourceType;".to_string();
+
+        self.select_resource_config_call(query)
+            .into_stream_03x()
+            .filter_map(async |response| {
+                response
+                    .inspect_err(|err| error!(err = %err, "API error"))
+                    .ok()
+            })
+            .map(|row| {
+                let parsed: ResourceCountWithSelectResultRow = serde_json::from_str(&row).unwrap();
+                (parsed.resource_type.into(), parsed.count)
+            })
+            .collect()
+            .await
+    }
+
     async fn get_resource_configs_with_select(
         &self,
         file_tx: mpsc::Sender<String>,
-    ) -> HashSet<ResourceType> {
-        let seen_set = Arc::new(RwLock::new(HashSet::<ResourceType>::new()));
+        cutoff: Option<DateTime<Utc>>,
+    ) {
+        let query = if let Some(dt) = cutoff {
+            format!(
+                "{QUERY} WHERE configurationItemCaptureTime > '{}';",
+                dt.to_rfc3339()
+            )
+        } else {
+            format!("{QUERY};")
+        };
 
-        let tt = TaskTracker::new();
-
-        self.select_resource_config_call()
+        self.select_resource_config_call(query)
             .into_stream_03x()
             .filter_map(async |response| {
                 response
@@ -181,24 +223,18 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             })
             .for_each(async |resource| {
                 let inner_file_tx = file_tx.clone();
-                let seen_set = seen_set.clone();
-                tt.spawn_blocking(move || {
-                    process_resource_config(&inner_file_tx, &seen_set, resource);
+                task::spawn_blocking(move || {
+                    process_resource_config(&inner_file_tx, resource);
                 });
             })
             .await;
-
-        // must wait until all the resources are processed to ensure that the seen_set is complete
-        tt.close();
-        tt.wait().await;
-
-        Arc::try_unwrap(seen_set).unwrap().into_inner().unwrap()
     }
 
     async fn get_resource_configs_with_batch(
         &self,
         file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
+        cutoff: Option<DateTime<Utc>>,
     ) {
         // single batch is 100
         let (batch_tx, batch_rx) = mpsc::channel::<C::Identifier>(256);
@@ -222,8 +258,16 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                             }
 
                             for item in response.into_items() {
-                                let json = item_to_json(item);
-                                file_tx.send(json.to_string()).await.unwrap();
+                                if cutoff.is_none_or(|cutoff| {
+                                    item.configuration_item_capture_time.is_some_and(|item_dt| {
+                                        item_dt
+                                            .to_chrono_utc()
+                                            .map_or(true, |item_dt| item_dt > cutoff)
+                                    })
+                                }) {
+                                    let json = item_to_json(item);
+                                    file_tx.send(json.to_string()).await.unwrap();
+                                }
                             }
                         });
                     })
@@ -269,10 +313,13 @@ impl ConfigFetcher for AccountFetcher {
             .send()
     }
 
-    fn select_resource_config_call(&self) -> PaginationStream<Result<String, impl Error>> {
+    fn select_resource_config_call(
+        &self,
+        query: String,
+    ) -> PaginationStream<Result<String, impl Error>> {
         self.client
             .select_resource_config()
-            .expression(QUERY)
+            .expression(query)
             .into_paginator()
             .items()
             .send()
@@ -326,11 +373,14 @@ impl ConfigFetcher for AggregateFetcher {
             .send()
     }
 
-    fn select_resource_config_call(&self) -> PaginationStream<Result<String, impl Error>> {
+    fn select_resource_config_call(
+        &self,
+        query: String,
+    ) -> PaginationStream<Result<String, impl Error>> {
         self.client
             .select_aggregate_resource_config()
             .configuration_aggregator_name(&self.aggregator)
-            .expression(QUERY)
+            .expression(query)
             .into_paginator()
             .items()
             .send()
@@ -403,11 +453,7 @@ impl BatchResponse for BatchGetAggregateResourceConfigOutput {
     }
 }
 
-fn process_resource_config(
-    file_sender: &mpsc::Sender<String>,
-    seen_map: &Arc<RwLock<HashSet<ResourceType>>>,
-    mut resource: String,
-) {
+fn process_resource_config(file_sender: &mpsc::Sender<String>, mut resource: String) {
     // AWS is frustratingly inconsistent. I've found that there are some resources which
     // will return an empty object as the tag field instead of an empty array. So far I've
     // noticed AWS::Config::ConformancePackCompliance does this. Here we work around this
@@ -431,13 +477,6 @@ fn process_resource_config(
             .unwrap()
             .insert("tags".into(), serde_json::Value::Array(vec![]));
         resource = value.to_string();
-    }
-
-    let resource_type = ResourceType::from(value.get("resourceType").unwrap().as_str().unwrap());
-    if !seen_map.read().unwrap().contains(&resource_type)
-        && seen_map.write().unwrap().insert(resource_type.clone())
-    {
-        info!(%resource_type, "seen new resource type");
     }
 
     file_sender.blocking_send(resource).unwrap();
