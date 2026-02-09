@@ -122,40 +122,32 @@ impl DispatchingClient {
     }
 }
 
+macro_rules! dispatch {
+    ($method:ident($($arg:ident: $arg_ty:ty),*) $(-> $ret:ty)?) => {
+        async fn $method(&self $(, $arg: $arg_ty)*) $(-> $ret)? {
+            match &self.fetcher {
+                DispatchTarget::Aggregate(f) => f.$method($($arg),*).await,
+                DispatchTarget::Account(f) => f.$method($($arg),*).await,
+            }
+        }
+    };
+}
+
 impl ConfigFetchClient for DispatchingClient {
-    async fn get_resource_counts(&self) -> HashMap<ResourceType, i64> {
-        match &self.fetcher {
-            DispatchTarget::Aggregate(f) => f.get_resource_counts().await,
-            DispatchTarget::Account(f) => f.get_resource_counts().await,
-        }
-    }
+    dispatch!(get_resource_counts() -> HashMap<ResourceType, i64>);
 
-    async fn get_resource_configs_with_select(
-        &self,
-        file_tx: mpsc::Sender<String>,
-    ) -> HashSet<ResourceType> {
-        match &self.fetcher {
-            DispatchTarget::Aggregate(f) => f.get_resource_configs_with_select(file_tx).await,
-            DispatchTarget::Account(f) => f.get_resource_configs_with_select(file_tx).await,
-        }
-    }
+    dispatch!(
+        get_resource_configs_with_select(
+            file_tx: mpsc::Sender<String>
+        ) -> HashSet<ResourceType>
+    );
 
-    async fn get_resource_configs_with_batch(
-        &self,
-        file_tx: mpsc::Sender<String>,
-        resource_types: impl Iterator<Item = ResourceType>,
-    ) {
-        match &self.fetcher {
-            DispatchTarget::Aggregate(f) => {
-                f.get_resource_configs_with_batch(file_tx, resource_types)
-                    .await;
-            }
-            DispatchTarget::Account(f) => {
-                f.get_resource_configs_with_batch(file_tx, resource_types)
-                    .await;
-            }
-        }
-    }
+    dispatch!(
+        get_resource_configs_with_batch(
+            file_tx: mpsc::Sender<String>,
+            resource_types: impl Iterator<Item = ResourceType>
+        )
+    );
 }
 
 impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
