@@ -29,6 +29,7 @@ pub enum Command {
         #[arg(short, long)]
         rebuild: bool,
     },
+    Snapshot,
     /// Query the offline database
     Query {
         /// Filter on resource type

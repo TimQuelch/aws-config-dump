@@ -9,6 +9,7 @@ mod completion;
 mod config;
 mod config_fetch_client;
 mod query;
+mod snapshot;
 mod util;
 
 #[tokio::main()]
@@ -30,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
             no_fetch,
             rebuild,
         } => build::build_database(aggregator_name, !no_fetch, rebuild).await,
+        Command::Snapshot => snapshot::get_snapshots().await,
         Command::Query {
             resource_type,
             account,
