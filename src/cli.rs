@@ -21,6 +21,10 @@ pub enum Command {
         #[arg(short, long)]
         aggregator_name: Option<String>,
 
+        /// Use snapshots
+        #[arg(short = 's', long)]
+        with_snapshots: bool,
+
         /// Don't fetch data, only build the resource tables
         #[arg(short, long)]
         no_fetch: bool,
@@ -29,7 +33,6 @@ pub enum Command {
         #[arg(short, long)]
         rebuild: bool,
     },
-    Snapshot,
     /// Query the offline database
     Query {
         /// Filter on resource type

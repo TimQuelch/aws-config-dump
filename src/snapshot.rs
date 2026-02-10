@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use aws_smithy_types_convert::stream::PaginationStreamExt;
 use flate2::read::GzDecoder;
 use futures::TryStreamExt;
+use tempfile::TempDir;
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
@@ -11,7 +12,7 @@ use tokio::{
 };
 use tracing::{info, warn};
 
-pub async fn get_snapshots() -> anyhow::Result<()> {
+pub async fn get_snapshots() -> anyhow::Result<TempDir> {
     let config = aws_config::from_env().load().await;
     let config_client = aws_sdk_config::Client::new(&config);
 
@@ -23,10 +24,17 @@ pub async fn get_snapshots() -> anyhow::Result<()> {
 
     let mut downloads = JoinSet::new();
 
+    let dir = task::spawn_blocking(TempDir::new).await??;
+
     while let Some(result) = snapshot_keys.join_next().await {
         if let Some(key) = result?? {
             info!(key, "got snapshot key");
-            downloads.spawn(download_snapshot_object(s3.clone(), bucket.clone(), key));
+            downloads.spawn(download_snapshot_object(
+                s3.clone(),
+                bucket.clone(),
+                key,
+                dir.path().to_owned(),
+            ));
         }
     }
 
@@ -34,7 +42,7 @@ pub async fn get_snapshots() -> anyhow::Result<()> {
         result??;
     }
 
-    Ok(())
+    Ok(dir)
 }
 
 async fn get_latest_snapshot_keys(
@@ -170,6 +178,7 @@ pub async fn download_snapshot_object(
     client: aws_sdk_s3::Client,
     bucket: String,
     key: String,
+    dir: PathBuf,
 ) -> anyhow::Result<()> {
     let mut reader = client
         .get_object()
@@ -203,8 +212,9 @@ pub async fn download_snapshot_object(
         .ok_or(anyhow!("failed to get filename"))?
         .to_owned();
 
-    let mut file_writer =
-        BufWriter::with_capacity(128 * 1024, fs::File::create_new(&filename).await?);
+    let path = dir.join(&filename);
+
+    let mut file_writer = BufWriter::with_capacity(128 * 1024, fs::File::create_new(path).await?);
 
     for item in items {
         let s = task::spawn_blocking(move || {

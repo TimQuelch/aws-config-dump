@@ -8,6 +8,7 @@ mod cli;
 mod completion;
 mod config;
 mod config_fetch_client;
+mod db;
 mod query;
 mod snapshot;
 mod util;
@@ -30,8 +31,8 @@ async fn main() -> anyhow::Result<()> {
             aggregator_name,
             no_fetch,
             rebuild,
-        } => build::build_database(aggregator_name, !no_fetch, rebuild).await,
-        Command::Snapshot => snapshot::get_snapshots().await,
+            with_snapshots,
+        } => build::build_database(aggregator_name, !no_fetch, rebuild, with_snapshots).await,
         Command::Query {
             resource_type,
             account,
