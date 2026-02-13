@@ -41,7 +41,14 @@ async fn main() -> anyhow::Result<()> {
             resource_type,
             account,
             fields,
+            all_fields,
             query,
-        } => query::query(resource_type.as_deref(), account.as_deref(), fields, &query),
+        } => query::query(
+            resource_type.as_deref(),
+            account.as_deref(),
+            fields,
+            all_fields,
+            &query,
+        ),
     }
 }

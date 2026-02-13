@@ -48,6 +48,9 @@ pub enum Command {
         /// Select fields
         #[arg(short, long, num_args(1..) , add = ArgValueCandidates::new(completion::FieldCandidates::new()))]
         fields: Option<Vec<String>>,
+        /// all fields
+        #[arg(short = 'F', long)]
+        all_fields: bool,
         /// Query
         #[arg(short, long, default_value = "SELECT * FROM input")]
         query: String,
