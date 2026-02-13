@@ -15,11 +15,9 @@ use tokio::{
 };
 use tracing::info;
 
+use crate::config_fetch_client::{ConfigFetchClient, DispatchingClient};
 use crate::db;
-use crate::{
-    config_fetch_client::{ConfigFetchClient, DispatchingClient},
-    snapshot::get_snapshots,
-};
+use crate::snapshot;
 
 pub async fn build_database(
     aggregator: Option<String>,
@@ -35,7 +33,7 @@ pub async fn build_database(
 
     if should_fetch {
         if with_snapshots {
-            let mut dir = get_snapshots().await?;
+            let mut dir = snapshot::get_snapshots().await?;
             dir.disable_cleanup(true);
             db::build_resources_table_from_snapshots(&db_conn, &dir)?;
         } else {
