@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Tim Quelch <tim@tquelch.com>
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
 use std::collections::HashMap;
 
 use chrono::{DateTime, Days, Utc};

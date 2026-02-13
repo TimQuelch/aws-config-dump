@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Tim Quelch <tim@tquelch.com>
+//
+// SPDX-License-Identifier: GPL-3.0-only
+
 use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
 
