@@ -3,3 +3,4 @@ result
 .env*
 !.envrc
 .pre-commit-config.yaml
+.claude/*.local.*

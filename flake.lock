@@ -172,11 +172,11 @@
         "pre-commit": "pre-commit"
       },
       "locked": {
-        "lastModified": 1771581615,
-        "narHash": "sha256-M4L+4kvRF0NLbXvExupbMha2QnZ68t96nd18oSWyoZU=",
+        "lastModified": 1771589001,
+        "narHash": "sha256-LGLw0GrfRp8kvyr2vrod0eZrAONbDTJkEKykLOd/DgI=",
         "owner": "TimQuelch",
         "repo": "jailed-claude",
-        "rev": "be6170439ff465453aa3b8055c912a2ed0ac322a",
+        "rev": "e44e7e9022e4c1d29bdbd87188c3e4d17ba38648",
         "type": "github"
       },
       "original": {
