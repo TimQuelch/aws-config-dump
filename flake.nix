@@ -98,19 +98,19 @@
           (craneLib.devShell {
             inherit (preCommit) shellHook;
             checks = self.checks.${system};
-            packages = with pkgs; [ bacon ] ++ preCommit.enabledPackages;
+            packages =
+              with pkgs;
+              [
+                bacon
+                gcc
+              ]
+              ++ preCommit.enabledPackages;
           }).overrideAttrs
             (prevAttrs: {
               nativeBuildInputs = prevAttrs.nativeBuildInputs ++ [
                 (jailed-claude.lib.makeJailedClaude {
                   inherit pkgs;
-                  extraPkgs = [
-                    (pkgs.mkShell {
-                      name = "shell-env";
-                      # paths = prevAttrs.nativeBuildInputs;
-                      packages = prevAttrs.nativeBuildInputs;
-                    })
-                  ];
+                  extraPkgs = prevAttrs.nativeBuildInputs;
                 })
               ];
             });
