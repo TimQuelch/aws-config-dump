@@ -11,6 +11,8 @@
     pre-commit.inputs.nixpkgs.follows = "nixpkgs";
     advisory-db.url = "github:rustsec/advisory-db";
     advisory-db.flake = false;
+    jailed-claude.url = "github:TimQuelch/jailed-claude";
+    jailed-claude.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -21,12 +23,20 @@
       crane,
       advisory-db,
       pre-commit,
+      jailed-claude,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        pkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+          overlays = [
+            jailed-claude.overlays.default
+            (final: prev: { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; })
+          ];
+        };
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
 
@@ -84,12 +94,20 @@
       in
       {
         packages.default = aws-config-dump;
-        devShells.default = craneLib.devShell {
-          inherit (preCommit) shellHook;
-          buildInputs = preCommit.enabledPackages;
-          checks = self.checks.${system};
-          packages = with pkgs; [ bacon ];
-        };
+        devShells.default =
+          (craneLib.devShell {
+            inherit (preCommit) shellHook;
+            checks = self.checks.${system};
+            packages = with pkgs; [ bacon ] ++ preCommit.enabledPackages;
+          }).overrideAttrs
+            (prevAttrs: {
+              nativeBuildInputs = prevAttrs.nativeBuildInputs ++ [
+                (jailed-claude.lib.makeJailedClaude {
+                  inherit pkgs;
+                  extraPkgs = prevAttrs.nativeBuildInputs;
+                })
+              ];
+            });
 
         checks = {
           inherit aws-config-dump;
