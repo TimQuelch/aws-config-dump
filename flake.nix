@@ -104,7 +104,13 @@
               nativeBuildInputs = prevAttrs.nativeBuildInputs ++ [
                 (jailed-claude.lib.makeJailedClaude {
                   inherit pkgs;
-                  extraPkgs = prevAttrs.nativeBuildInputs;
+                  extraPkgs = [
+                    (pkgs.mkShell {
+                      name = "shell-env";
+                      # paths = prevAttrs.nativeBuildInputs;
+                      packages = prevAttrs.nativeBuildInputs;
+                    })
+                  ];
                 })
               ];
             });

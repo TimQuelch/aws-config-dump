@@ -548,7 +548,7 @@ impl BatchResponse for BatchGetAggregateResourceConfigOutput {
     }
 }
 
-fn process_resource_config(file_sender: &mpsc::Sender<String>, mut resource: String) {
+fn sanitize_resource_config(mut resource: String) -> String {
     // AWS is frustratingly inconsistent. I've found that there are some resources which
     // will return an empty object as the tag field instead of an empty array. So far I've
     // noticed AWS::Config::ConformancePackCompliance does this. Here we work around this
@@ -573,8 +573,13 @@ fn process_resource_config(file_sender: &mpsc::Sender<String>, mut resource: Str
             .insert("tags".into(), serde_json::Value::Array(vec![]));
         resource = value.to_string();
     }
+    resource
+}
 
-    file_sender.blocking_send(resource).unwrap();
+fn process_resource_config(file_sender: &mpsc::Sender<String>, resource: String) {
+    file_sender
+        .blocking_send(sanitize_resource_config(resource))
+        .unwrap();
 }
 
 fn item_to_json(item: BaseConfigurationItem) -> serde_json::Value {
@@ -617,4 +622,101 @@ fn item_to_json(item: BaseConfigurationItem) -> serde_json::Value {
         "configuration": configuration,
         "supplementaryConfiguration":supplementary_configuration,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    // --- sanitize_resource_config ---
+
+    #[test]
+    fn sanitize_tags_already_array() {
+        let input = r#"{"resourceId":"i-123","tags":[{"key":"env","value":"prod"}]}"#.to_string();
+        let output = sanitize_resource_config(input);
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert!(parsed["tags"].is_array());
+        assert_eq!(parsed["tags"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sanitize_tags_object_replaced_with_empty_array() {
+        let input = r#"{"resourceId":"i-123","tags":{}}"#.to_string();
+        let output = sanitize_resource_config(input);
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed["tags"], serde_json::json!([]));
+    }
+
+    // --- item_to_json ---
+
+    #[test]
+    fn item_to_json_basic_fields() {
+        let item = BaseConfigurationItem::builder()
+            .arn("arn:aws:ec2:us-east-1:123456789012:instance/i-123")
+            .account_id("123456789012")
+            .aws_region("us-east-1")
+            .resource_id("i-123")
+            .build();
+        let json = item_to_json(item);
+        assert_eq!(
+            json["arn"],
+            "arn:aws:ec2:us-east-1:123456789012:instance/i-123"
+        );
+        assert_eq!(json["accountId"], "123456789012");
+        assert_eq!(json["awsRegion"], "us-east-1");
+        assert_eq!(json["resourceId"], "i-123");
+        assert_eq!(json["tags"], serde_json::json!([]));
+        assert_eq!(json["relationships"], serde_json::json!([]));
+        assert!(json["configuration"].is_null());
+    }
+
+    #[test]
+    fn item_to_json_configuration_valid_json() {
+        let item = BaseConfigurationItem::builder()
+            .configuration(r#"{"instanceType":"t3.micro","state":"running"}"#)
+            .build();
+        let json = item_to_json(item);
+        assert_eq!(json["configuration"]["instanceType"], "t3.micro");
+        assert_eq!(json["configuration"]["state"], "running");
+    }
+
+    #[test]
+    fn item_to_json_configuration_invalid_json() {
+        let item = BaseConfigurationItem::builder()
+            .configuration("not-valid-json")
+            .build();
+        let json = item_to_json(item);
+        assert_eq!(json["configuration"], "not-valid-json");
+    }
+
+    #[test]
+    fn item_to_json_supplementary_configuration() {
+        let item = BaseConfigurationItem::builder()
+            .set_supplementary_configuration(Some(HashMap::from([
+                (
+                    "PublicAccessBlockConfiguration".to_string(),
+                    r#"{"blockPublicAcls":true}"#.to_string(),
+                ),
+                ("BucketVersioning".to_string(), "not-json".to_string()),
+            ])))
+            .build();
+        let json = item_to_json(item);
+        assert_eq!(
+            json["supplementaryConfiguration"]["PublicAccessBlockConfiguration"]["blockPublicAcls"],
+            true
+        );
+        assert_eq!(
+            json["supplementaryConfiguration"]["BucketVersioning"],
+            "not-json"
+        );
+    }
+
+    #[test]
+    fn item_to_json_no_supplementary_configuration() {
+        let item = BaseConfigurationItem::builder().build();
+        let json = item_to_json(item);
+        assert_eq!(json["supplementaryConfiguration"], serde_json::json!({}));
+    }
 }
