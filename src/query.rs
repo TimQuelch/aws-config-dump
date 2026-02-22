@@ -146,4 +146,51 @@ mod tests {
         let q = build_query(None, None, None, true, "SELECT count(*) FROM input");
         assert!(q.contains("SELECT count(*) FROM input;"));
     }
+
+    #[test]
+    fn default_columns_no_resource_type() {
+        let q = build_query(None, None, None, false, "SELECT * FROM input");
+        assert!(q.contains(&format!("SELECT {DEFAULT_COLUMNS} FROM")));
+    }
+
+    #[test]
+    fn default_columns_with_known_resource_type() {
+        let q = build_query(
+            Some("AWS::IAM::Role"),
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+        );
+        assert!(q.contains(&format!("SELECT {BASE_RESOURCE_DEFAULT_COLUMNS},arn FROM")));
+    }
+
+    #[test]
+    fn default_columns_with_unknown_resource_type() {
+        let q = build_query(
+            Some("AWS::EC2::Instance"),
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+        );
+        assert!(q.contains(&format!("SELECT {BASE_RESOURCE_DEFAULT_COLUMNS} FROM")));
+        // Should not have any extra columns appended
+        assert!(q.contains(&format!(
+            "SELECT {BASE_RESOURCE_DEFAULT_COLUMNS} FROM query_table"
+        )));
+    }
+
+    #[test]
+    fn resource_type_and_account_combined() {
+        let q = build_query(
+            Some("AWS::EC2::Instance"),
+            Some("123456789012"),
+            None,
+            true,
+            "SELECT * FROM input",
+        );
+        assert!(q.contains("query_table('ec2_instance')"));
+        assert!(q.contains("WHERE accountId == 123456789012"));
+    }
 }
