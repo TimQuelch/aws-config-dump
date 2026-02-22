@@ -11,7 +11,7 @@
     pre-commit.inputs.nixpkgs.follows = "nixpkgs";
     advisory-db.url = "github:rustsec/advisory-db";
     advisory-db.flake = false;
-    jailed-claude.url = "github:TimQuelch/jailed-claude";
+    jailed-claude.url = "github:TimQuelch/jailed-claude/develop";
     jailed-claude.inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -94,26 +94,32 @@
       in
       {
         packages.default = aws-config-dump;
-        devShells.default =
-          (craneLib.devShell {
+        devShells = {
+          # default shell includes jailed claude code. The claude code jail then calls nix develop
+          # on the base shell which uses the base shell, which does not include the jailed claude.
+          # This ensures that thee un-jailed claude code is available within the jailed claude for
+          # recursive calls
+          default = self.devShells.${system}.base.overrideAttrs (prevAttrs: {
+            nativeBuildInputs = prevAttrs.nativeBuildInputs ++ [
+              (jailed-claude.lib.makeJailedClaude {
+                inherit pkgs;
+                extraReadWritePaths = [ "~/.cargo" ];
+                persistHome = true;
+                wrapper = entry: "nix develop .#base -c ${entry}";
+              })
+            ];
+          });
+          base = craneLib.devShell {
             inherit (preCommit) shellHook;
             checks = self.checks.${system};
             packages =
               with pkgs;
               [
                 bacon
-                gcc
               ]
               ++ preCommit.enabledPackages;
-          }).overrideAttrs
-            (prevAttrs: {
-              nativeBuildInputs = prevAttrs.nativeBuildInputs ++ [
-                (jailed-claude.lib.makeJailedClaude {
-                  inherit pkgs;
-                  extraPkgs = prevAttrs.nativeBuildInputs;
-                })
-              ];
-            });
+          };
+        };
 
         checks = {
           inherit aws-config-dump;
