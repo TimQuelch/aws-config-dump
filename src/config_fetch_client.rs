@@ -19,7 +19,7 @@ use aws_sdk_config::{
 use aws_smithy_async::future::pagination_stream::PaginationStream;
 use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
 use chrono::{DateTime, Utc};
-use futures::stream::{self, StreamExt};
+use futures::stream::{self, Stream, StreamExt};
 use serde::{self, Deserialize, Serialize, ser::SerializeStruct};
 use tokio::{
     sync::{Semaphore, mpsc},
@@ -66,6 +66,7 @@ pub trait ConfigFetchClient {
         file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
     );
+    async fn get_resource_identifiers_with_select(&self, file_tx: mpsc::Sender<String>);
 }
 
 trait ConfigFetcher {
@@ -216,6 +217,8 @@ impl ConfigFetchClient for DispatchingClient {
             resource_types: impl Iterator<Item = ResourceType>
         )
     );
+
+    dispatch!(get_resource_identifiers_with_select(file_tx: mpsc::Sender<String>));
 }
 
 impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
@@ -235,13 +238,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
     async fn get_resource_counts_with_select(&self) -> HashMap<ResourceType, i64> {
         let query = "SELECT resourceType, COUNT(*) GROUP BY resourceType;".to_string();
 
-        self.select_resource_config_call(query)
-            .into_stream_03x()
-            .filter_map(async |response| {
-                response
-                    .inspect_err(|err| error!(err = %err, "API error"))
-                    .ok()
-            })
+        select_config_stream(self, query)
             .map(|row| {
                 let parsed: ResourceCountWithSelectResultRow = serde_json::from_str(&row).unwrap();
                 (parsed.resource_type.into(), parsed.count)
@@ -264,13 +261,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             format!("{QUERY};")
         };
 
-        self.select_resource_config_call(query)
-            .into_stream_03x()
-            .filter_map(async |response| {
-                response
-                    .inspect_err(|err| error!(err = %err, "API error"))
-                    .ok()
-            })
+        select_config_stream(self, query)
             .for_each(async |resource| {
                 let inner_file_tx = file_tx.clone();
                 task::spawn_blocking(move || {
@@ -348,6 +339,17 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                     .await;
             });
         });
+    }
+
+    async fn get_resource_identifiers_with_select(&self, file_tx: mpsc::Sender<String>) {
+        select_config_stream(
+            self,
+            "SELECT resourceType, accountId, resourceId;".to_string(),
+        )
+        .for_each(async |resource| {
+            file_tx.send(resource).await.unwrap();
+        })
+        .await;
     }
 
     async fn get_resource_identifiers_with_batch(
@@ -546,6 +548,16 @@ impl BatchResponse for BatchGetAggregateResourceConfigOutput {
     fn into_items(self) -> Vec<BaseConfigurationItem> {
         self.base_configuration_items.unwrap_or_default()
     }
+}
+
+fn select_config_stream<C: ConfigFetcher>(
+    fetcher: &C,
+    query: String,
+) -> impl Stream<Item = String> + '_ {
+    fetcher
+        .select_resource_config_call(query)
+        .into_stream_03x()
+        .filter_map(async |r| r.inspect_err(|e| error!(err = %e, "API error")).ok())
 }
 
 fn sanitize_resource_config(mut resource: String) -> String {

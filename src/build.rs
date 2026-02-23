@@ -94,15 +94,21 @@ async fn fetch_resources(
     info!("fetching resources which are not available with select API");
 
     config_client
-        .get_resource_configs_with_batch(resources_tx, unselectable_types.into_iter(), cutoff)
+        .get_resource_configs_with_batch(resources_tx, unselectable_types.iter().cloned(), cutoff)
         .await;
 
-    info!("fetching all resource identifiers to determine which have been deleted");
+    info!("fetching resource identifiers for selectable types");
 
     let (identifiers_file_tx, identifiers_handle) = temp_file_writer();
 
     config_client
-        .get_resource_identifiers_with_batch(identifiers_file_tx, all_types.into_iter())
+        .get_resource_identifiers_with_select(identifiers_file_tx.clone())
+        .await;
+
+    info!("fetching resource identifiers for non-selectable types");
+
+    config_client
+        .get_resource_identifiers_with_batch(identifiers_file_tx, unselectable_types.into_iter())
         .await;
 
     let resources_path = resources_handle.await?;
