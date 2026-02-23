@@ -38,13 +38,16 @@ pub async fn build_database(
             db::build_resources_table_from_snapshots(&db_conn, &dir)?;
         } else {
             let cutoff = if should_rebuild {
-                info!("fetching all resources");
                 None
             } else {
-                let cutoff = db::get_timestamp_cutoff(&db_conn)?;
-                info!(%cutoff, "fetching updated resources");
-                Some(cutoff)
+                db::get_timestamp_cutoff(&db_conn)?
             };
+
+            if let Some(cutoff_timestamp) = cutoff {
+                info!(%cutoff_timestamp, "fetching updated resources");
+            } else {
+                info!("fetching all resources");
+            }
 
             let (resources_path, identifiers_path) = fetch_resources(aggregator, cutoff).await?;
             db::build_resources_table(&db_conn, &resources_path, &identifiers_path)?;

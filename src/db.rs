@@ -31,12 +31,22 @@ pub fn connect_to_db() -> anyhow::Result<duckdb::Connection> {
     Ok(db_conn)
 }
 
-pub fn get_timestamp_cutoff(db_conn: &duckdb::Connection) -> anyhow::Result<DateTime<Utc>> {
+pub fn get_timestamp_cutoff(db_conn: &duckdb::Connection) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let table_exists: i64 = db_conn.query_row(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'resources' AND table_type = 'BASE TABLE';",
+        [],
+        |row| row.get(0),
+    )?;
+
+    if table_exists == 0 {
+        return Ok(None);
+    }
+
     let max_time_in_db: DateTime<Utc> = db_conn
-        .prepare_cached("SELECT max(configurationItemCaptureTime) from resources;")?
+        .prepare_cached("SELECT max(configurationItemCaptureTime) FROM resources;")?
         .query_one([], |x| x.get(0))?;
 
-    Ok(max_time_in_db - Days::new(1))
+    Ok(Some(max_time_in_db - Days::new(1)))
 }
 
 pub fn build_resources_table(
