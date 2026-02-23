@@ -405,6 +405,7 @@ impl ConfigFetcher for AccountFetcher {
         self.client
             .select_resource_config()
             .expression(query)
+            .limit(100)
             .into_paginator()
             .items()
             .send()
@@ -417,6 +418,7 @@ impl ConfigFetcher for AccountFetcher {
         self.client
             .list_discovered_resources()
             .resource_type(resource_type)
+            .limit(100)
             .into_paginator()
             .items()
             .send()
@@ -474,6 +476,7 @@ impl ConfigFetcher for AggregateFetcher {
             .select_aggregate_resource_config()
             .configuration_aggregator_name(&self.aggregator)
             .expression(query)
+            .limit(100)
             .into_paginator()
             .items()
             .send()
@@ -487,6 +490,7 @@ impl ConfigFetcher for AggregateFetcher {
             .list_aggregate_discovered_resources()
             .configuration_aggregator_name(&self.aggregator)
             .resource_type(resource_type)
+            .limit(100)
             .into_paginator()
             .items()
             .send()
