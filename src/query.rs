@@ -17,7 +17,7 @@ enum FieldSelection {
 
 fn build_query(
     resource_type: Option<&str>,
-    account: Option<&str>,
+    accounts: Option<&[String]>,
     fields: Option<Vec<String>>,
     all_fields: bool,
     user_query: &str,
@@ -33,9 +33,16 @@ fn build_query(
         )
     };
     let columns = column_selection(field_selection, include_account_name);
-    let account_clause = account.map_or_else(String::new, |account| {
-        format!("WHERE accountId == {account}")
-    });
+    let account_clause = accounts
+        .filter(|a| !a.is_empty())
+        .map_or_else(String::new, |accounts| {
+            let values = accounts
+                .iter()
+                .map(|a| format!("'{a}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("WHERE accountId IN ({values}) OR accountName IN ({values})")
+        });
     format!(
         "CREATE OR REPLACE TEMPORARY VIEW input AS
             SELECT {columns} FROM query_table('{table}')
@@ -64,14 +71,14 @@ fn has_account_names() -> bool {
 /// Calls the duckdb CLI instead of using the SDK so we don't need to implement TSV formatting here
 pub fn query(
     resource_type: Option<&str>,
-    account: Option<&str>,
+    accounts: Option<&[String]>,
     fields: Option<Vec<String>>,
     all_fields: bool,
     query: &str,
 ) -> anyhow::Result<()> {
     let final_query = build_query(
         resource_type,
-        account,
+        accounts,
         fields,
         all_fields,
         query,
@@ -160,18 +167,41 @@ mod tests {
     fn account_filter_generates_where_clause() {
         let q = build_query(
             None,
-            Some("123456789012"),
+            Some(&["123456789012".to_string()]),
             None,
             false,
             "SELECT * FROM input",
             false,
         );
-        assert!(q.contains("WHERE accountId == 123456789012"));
+        assert!(
+            q.contains("WHERE accountId IN ('123456789012') OR accountName IN ('123456789012')")
+        );
+    }
+
+    #[test]
+    fn multiple_account_filters_generate_where_clause() {
+        let q = build_query(
+            None,
+            Some(&["123456789012".to_string(), "prod".to_string()]),
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+        );
+        assert!(q.contains(
+            "WHERE accountId IN ('123456789012', 'prod') OR accountName IN ('123456789012', 'prod')"
+        ));
     }
 
     #[test]
     fn no_account_filter_no_where_clause() {
         let q = build_query(None, None, None, false, "SELECT * FROM input", false);
+        assert!(!q.contains("WHERE"));
+    }
+
+    #[test]
+    fn empty_account_filter_no_where_clause() {
+        let q = build_query(None, Some(&[]), None, false, "SELECT * FROM input", false);
         assert!(!q.contains("WHERE"));
     }
 
@@ -346,13 +376,15 @@ mod tests {
     fn resource_type_and_account_filter_combined() {
         let q = build_query(
             Some("AWS::EC2::Instance"),
-            Some("123456789012"),
+            Some(&["123456789012".to_string()]),
             None,
             false,
             "SELECT * FROM input",
             false,
         );
         assert!(q.contains("query_table('ec2_instance')"));
-        assert!(q.contains("WHERE accountId == 123456789012"));
+        assert!(
+            q.contains("WHERE accountId IN ('123456789012') OR accountName IN ('123456789012')")
+        );
     }
 }

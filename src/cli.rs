@@ -49,10 +49,10 @@ pub enum Command {
         #[arg(short, long, add = ArgValueCandidates::new(completion::ResourceTypeCandidates::new()))]
         resource_type: Option<String>,
         /// Filter on account
-        #[arg(short, long, add = ArgValueCandidates::new(completion::AccountCandidates::new()))]
-        account: Option<String>,
+        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::AccountCandidates::new()))]
+        accounts: Option<Vec<String>>,
         /// Select fields
-        #[arg(short, long, num_args(1..) , add = ArgValueCandidates::new(completion::FieldCandidates::new()))]
+        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::FieldCandidates::new()))]
         fields: Option<Vec<String>>,
         /// all fields
         #[arg(short = 'F', long)]

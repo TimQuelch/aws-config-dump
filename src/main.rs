@@ -51,13 +51,13 @@ async fn main() -> anyhow::Result<()> {
         Command::Repl => query::repl(),
         Command::Query {
             resource_type,
-            account,
+            accounts,
             fields,
             all_fields,
             query,
         } => query::query(
             resource_type.as_deref(),
-            account.as_deref(),
+            accounts.as_deref(),
             fields,
             all_fields,
             &query,

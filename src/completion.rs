@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::sync::LazyLock;
+use std::{convert::Into, sync::LazyLock};
 
 use clap::{ArgMatches, CommandFactory};
 use clap_complete::{CompletionCandidate, engine::ValueCandidates};
@@ -27,13 +27,19 @@ fn db_conn() -> duckdb::Connection {
     duckdb::Connection::open(Config::get().db_path()).unwrap()
 }
 
+/// Run a given query and return the results as completion candidates. First returned column is the
+/// value and second returned column, if any, is the help text
 fn query_results_candidates(query: &str) -> Vec<clap_complete::CompletionCandidate> {
     db_conn()
         .prepare(query)
         .unwrap()
-        .query_map([], |row| row.get(0))
+        .query_map([], |row| Ok((row.get(0)?, row.get(1).ok())))
         .unwrap()
-        .filter_map(|r| r.ok().map(|c: String| CompletionCandidate::new(c)))
+        .filter_map(|r| {
+            r.ok().map(|(c, h): (String, Option<String>)| {
+                CompletionCandidate::new(c).help(h.map(Into::into))
+            })
+        })
         .collect()
 }
 
@@ -61,7 +67,19 @@ impl AccountCandidates {
 
 impl ValueCandidates for AccountCandidates {
     fn candidates(&self) -> Vec<clap_complete::CompletionCandidate> {
-        query_results_candidates("SELECT accountId FROM accounts;")
+        let mut candidates =
+            query_results_candidates("SELECT accountId, accountName FROM accounts;");
+        let flipped: Vec<_> = candidates
+            .iter()
+            .filter_map(|c| {
+                c.get_help().map(|h| {
+                    CompletionCandidate::new(h.to_string())
+                        .help(Some(c.get_value().to_string_lossy().to_string().into()))
+                })
+            })
+            .collect();
+        candidates.extend(flipped);
+        candidates
     }
 }
 
@@ -82,7 +100,7 @@ impl ValueCandidates for FieldCandidates {
 
         query_results_candidates(
             format!(
-                "FROM information_schema.columns SELECT column_name WHERE table_name = '{table}';"
+                "FROM information_schema.columns SELECT column_name, data_type WHERE table_name = '{table}';"
             )
             .as_str(),
         )
