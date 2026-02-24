@@ -79,14 +79,9 @@ pub fn query(
     );
 
     Command::new("duckdb")
-        .args([
-            "-readonly",
-            "-safe",
-            "-cmd",
-            ".mode tabs",
-            &Config::get().db_path().to_string_lossy(),
-            &final_query,
-        ])
+        .args(["-readonly", "-safe", "-cmd", ".mode tabs"])
+        .arg(Config::get().db_path())
+        .arg(&final_query)
         .spawn()?
         .wait()?;
 
