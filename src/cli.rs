@@ -36,6 +36,10 @@ pub enum Command {
         /// Force re-fetching all resources
         #[arg(short, long)]
         rebuild: bool,
+
+        /// Fetch account names from the AWS Organizations API
+        #[arg(long)]
+        fetch_org_accounts: bool,
     },
     /// Query the offline database
     Query {

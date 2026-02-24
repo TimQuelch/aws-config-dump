@@ -17,13 +17,20 @@ use tracing::info;
 
 use crate::config_fetch_client::{ConfigFetchClient, DispatchingClient};
 use crate::db;
+use crate::org_client;
 use crate::snapshot;
+
+pub enum FetchSource {
+    Api,
+    Snapshots,
+    Skip,
+}
 
 pub async fn build_database(
     aggregator: Option<String>,
-    should_fetch: bool,
+    fetch_source: FetchSource,
     should_rebuild: bool,
-    with_snapshots: bool,
+    fetch_org_accounts: bool,
 ) -> anyhow::Result<()> {
     if should_rebuild {
         db::delete_db().await?;
@@ -31,12 +38,13 @@ pub async fn build_database(
 
     let db_conn = db::connect_to_db()?;
 
-    if should_fetch {
-        if with_snapshots {
+    match fetch_source {
+        FetchSource::Snapshots => {
             let mut dir = snapshot::get_snapshots().await?;
             dir.disable_cleanup(true);
             db::build_resources_table_from_snapshots(&db_conn, &dir)?;
-        } else {
+        }
+        FetchSource::Api => {
             let cutoff = if should_rebuild {
                 None
             } else {
@@ -52,9 +60,16 @@ pub async fn build_database(
             let (resources_path, identifiers_path) = fetch_resources(aggregator, cutoff).await?;
             db::build_resources_table(&db_conn, &resources_path, &identifiers_path)?;
         }
+        FetchSource::Skip => {}
     }
 
-    db::build_derived_tables(&db_conn)?;
+    let org_accounts = if fetch_org_accounts {
+        Some(org_client::fetch_org_accounts().await?)
+    } else {
+        None
+    };
+
+    db::build_derived_tables(&db_conn, org_accounts)?;
     Ok(())
 }
 

@@ -195,10 +195,43 @@ pub fn build_resources_table_from_snapshots(
     Ok(())
 }
 
-pub fn build_derived_tables(db_conn: &duckdb::Connection) -> anyhow::Result<()> {
+pub fn build_derived_tables(
+    db_conn: &duckdb::Connection,
+    org_accounts: Option<Vec<(String, Option<String>)>>,
+) -> anyhow::Result<()> {
+    db_conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS accounts (
+            accountId VARCHAR PRIMARY KEY,
+            accountName VARCHAR,
+        );
+        CREATE OR REPLACE TEMPORARY TABLE org_accounts_temp (
+            accountId VARCHAR,
+            accountName VARCHAR,
+        );",
+    )?;
+
+    if let Some(accounts) = org_accounts {
+        let mut stmt = db_conn.prepare_cached("INSERT INTO org_accounts_temp VALUES (?, ?);")?;
+        for (account_id, account_name) in accounts {
+            stmt.execute(params![account_id, account_name])?;
+        }
+    }
+
+    db_conn.execute_batch(
+        "MERGE INTO accounts
+            USING (
+                SELECT accountId, accountName
+                FROM (SELECT DISTINCT accountId FROM resources)
+                LEFT JOIN org_accounts_temp USING (accountId)
+            ) new
+            USING (accountId)
+            WHEN MATCHED AND new.accountName IS NOT NULL THEN UPDATE
+            WHEN NOT MATCHED THEN INSERT
+            WHEN NOT MATCHED BY SOURCE THEN DELETE;",
+    )?;
+
     db_conn.execute_batch(concat!(
         "CREATE OR REPLACE VIEW resourceTypes AS SELECT DISTINCT resourceType FROM resources;",
-        "CREATE OR REPLACE VIEW accounts AS SELECT DISTINCT accountId FROM resources;",
         "CREATE OR REPLACE VIEW regions AS SELECT DISTINCT awsRegion FROM resources;",
     ))?;
 

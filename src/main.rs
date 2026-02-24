@@ -13,6 +13,7 @@ mod completion;
 mod config;
 mod config_fetch_client;
 mod db;
+mod org_client;
 mod query;
 mod snapshot;
 mod util;
@@ -36,7 +37,17 @@ async fn main() -> anyhow::Result<()> {
             no_fetch,
             rebuild,
             with_snapshots,
-        } => build::build_database(aggregator_name, !no_fetch, rebuild, with_snapshots).await,
+            fetch_org_accounts,
+        } => {
+            let fetch_source = if no_fetch {
+                build::FetchSource::Skip
+            } else if with_snapshots {
+                build::FetchSource::Snapshots
+            } else {
+                build::FetchSource::Api
+            };
+            build::build_database(aggregator_name, fetch_source, rebuild, fetch_org_accounts).await
+        }
         Command::Query {
             resource_type,
             account,
