@@ -12,13 +12,76 @@ struct Alteration {
     sql: &'static str,
 }
 
-static ALTERATIONS: &[Alteration] = &[Alteration {
-    required_tables: &["ec2_instance"],
-    description: "extract ec2_instance state name and reason",
-    sql:
-        "ALTER TABLE ec2_instance ALTER COLUMN state TYPE varchar USING state.name;
-          ALTER TABLE ec2_instance ALTER COLUMN stateReason TYPE varchar USING stateReason.message;",
-}];
+static ALTERATIONS: &[Alteration] = &[
+    Alteration {
+        required_tables: &["ec2_instance"],
+        description: "extract ec2_instance state name and reason",
+        sql:
+            "ALTER TABLE ec2_instance ALTER COLUMN state TYPE varchar USING struct_extract(state, 'name');
+             ALTER TABLE ec2_instance ALTER COLUMN stateReason TYPE varchar USING struct_extract(stateReason, 'message');",
+    },
+    Alteration {
+        required_tables: &["ssm_managedinstanceinventory"],
+        description: "transform ssm_managedinstanceinventory",
+        sql: r#"
+            ALTER TABLE ssm_managedinstanceinventory ADD COLUMN IF NOT EXISTS applications STRUCT(
+                ApplicationType VARCHAR,
+                InstalledTime TIMESTAMP,
+                Architecture VARCHAR,
+                "Version" VARCHAR,
+                Summary VARCHAR,
+                PackageId VARCHAR,
+                Publisher VARCHAR,
+                "Release" VARCHAR,
+                URL VARCHAR,
+                "Name" VARCHAR,
+                Epoch VARCHAR
+            )[];
+            UPDATE ssm_managedinstanceinventory SET applications = list_transform(
+                list_concat(
+                    list_filter(map_values("AWS:Application".Content), lambda x: json_type(x) == 'OBJECT'),
+                    flatten(
+                        list_transform(
+                            list_filter(map_values("AWS:Application".Content), lambda x: json_type(x) == 'ARRAY'),
+                            lambda x: x->'$[*]'
+                        )
+                    )
+                ),
+                lambda x: json_transform(x, '
+                    {
+                        "ApplicationType": "VARCHAR",
+                        "InstalledTime": "TIMESTAMP",
+                        "Architecture": "VARCHAR",
+                        "Version": "VARCHAR",
+                        "Summary": "VARCHAR",
+                        "PackageId": "VARCHAR",
+                        "Publisher": "VARCHAR",
+                        "Release": "VARCHAR",
+                        "URL": "VARCHAR",
+                        "Name": "VARCHAR",
+                        "Epoch": "VARCHAR"
+                    }'
+                )
+            );
+
+            ALTER TABLE ssm_managedinstanceinventory ADD COLUMN IF NOT EXISTS windowsUpdates MAP(
+                VARCHAR, STRUCT(installedtime TIMESTAMP, description VARCHAR, hotfixid VARCHAR, installedby VARCHAR)
+            );
+            UPDATE ssm_managedinstanceinventory SET windowsUpdates = map_from_entries(list_filter(
+                map_entries(CAST(
+                    "AWS:WindowsUpdate".Content AS
+                    MAP(VARCHAR, struct(installedtime TIMESTAMP, description VARCHAR, hotfixid VARCHAR, installedby VARCHAR))
+                )),
+                lambda x: x.value IS NOT NULL
+            ));
+
+            CREATE OR REPLACE TABLE ssm_managedinstanceinventory AS
+                SELECT
+                    * EXCLUDE("AWS:Application", "AWS:InstanceInformation", "AWS:WindowsUpdate"),
+                    unnest("AWS:InstanceInformation".Content[resourceId])
+                FROM ssm_managedinstanceinventory;"#
+    },
+];
 
 struct GlobalAlteration {
     description: &'static str,
@@ -29,12 +92,12 @@ struct GlobalAlteration {
 static GLOBAL_ALTERATIONS: &[GlobalAlteration] = &[GlobalAlteration {
     description: "add tagName column from tags['Name']",
     condition: |table| {
-        format!("SELECT count(*) > 0 FROM \"{table}\" WHERE tags['Name'] IS NOT NULL")
+        format!(r#"SELECT count(*) > 0 FROM "{table}" WHERE tags['Name'] IS NOT NULL"#)
     },
     sql: |table| {
         format!(
-            "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
-             UPDATE \"{table}\" SET tagName = tags['Name'];"
+            r#"ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
+               UPDATE "{table}" SET tagName = tags['Name'];"#
         )
     },
 }];
