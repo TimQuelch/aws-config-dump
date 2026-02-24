@@ -642,11 +642,7 @@ fn item_to_json(item: BaseConfigurationItem) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
-
-    // --- sanitize_resource_config ---
 
     #[test]
     fn sanitize_tags_already_array() {
@@ -664,8 +660,6 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["tags"], serde_json::json!([]));
     }
-
-    // --- item_to_json ---
 
     #[test]
     fn item_to_json_basic_fields() {
