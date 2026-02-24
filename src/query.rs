@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::process::Command;
+use std::{os::unix::process::CommandExt, process::Command};
 
 use aws_sdk_config::types::ResourceType;
 
@@ -86,6 +86,12 @@ pub fn query(
         .wait()?;
 
     Ok(())
+}
+
+/// Open an interactive `DuckDB` REPL against the local database
+pub fn repl() -> anyhow::Result<()> {
+    let err = Command::new("duckdb").arg(Config::get().db_path()).exec();
+    Err(anyhow::Error::from(err))
 }
 
 const DEFAULT_COLUMNS: &str = "resourceType, accountId, awsRegion, resourceId, resourceName";

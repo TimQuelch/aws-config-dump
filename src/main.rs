@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
             };
             build::build_database(aggregator_name, fetch_source, rebuild, fetch_org_accounts).await
         }
+        Command::Repl => query::repl(),
         Command::Query {
             resource_type,
             account,

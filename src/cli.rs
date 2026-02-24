@@ -41,6 +41,8 @@ pub enum Command {
         #[arg(long)]
         fetch_org_accounts: bool,
     },
+    /// Open an interactive `DuckDB` REPL against the local database
+    Repl,
     /// Query the offline database
     Query {
         /// Filter on resource type
