@@ -18,6 +18,7 @@ use tracing::info;
 use crate::config_fetch_client::{ConfigFetchClient, DispatchingClient};
 use crate::db;
 use crate::org_client;
+use crate::schema_alterations;
 use crate::snapshot;
 
 pub enum FetchSource {
@@ -70,6 +71,7 @@ pub async fn build_database(
     };
 
     db::build_derived_tables(&db_conn, org_accounts)?;
+    schema_alterations::apply_schema_alterations(&db_conn);
     Ok(())
 }
 
