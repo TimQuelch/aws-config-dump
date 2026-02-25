@@ -259,7 +259,7 @@ pub fn build_derived_tables(
                             accountId,
                             resourceType,
                             resourceId,
-                            configuration,
+                            nullif(configuration, json('{{}}')) as configuration,
                             supplementaryConfiguration
                         FROM resources
                         WHERE resourceType = ?
@@ -285,10 +285,7 @@ pub fn build_derived_tables(
                         j.supplementaryConfiguration
                     FROM
                         read_json(?) j
-                        JOIN resources r
-                            ON j.accountId = r.accountId
-                            AND j.resourceType = r.resourceType
-                            AND j.resourceId = r.resourceId;"
+                        JOIN resources r USING (accountId, resourceType, resourceId);"
                 )
                 .as_str(),
                 params![filename],
