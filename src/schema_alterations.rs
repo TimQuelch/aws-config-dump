@@ -81,6 +81,65 @@ static ALTERATIONS: &[Alteration] = &[
                     unnest("AWS:InstanceInformation".Content[resourceId])
                 FROM ssm_managedinstanceinventory;"#
     },
+    Alteration {
+        required_tables: &["ssm_patchcompliance"],
+        description: "transform ssm_patchcompliance",
+        sql: r#"
+            ALTER TABLE ssm_patchcompliance ADD COLUMN IF NOT EXISTS complianceSummary STRUCT(
+                PatchBaselineId VARCHAR,
+                PatchGroup VARCHAR,
+                Status VARCHAR,
+                OverallSeverity VARCHAR,
+                NonCompliantCriticalCount INT,
+                NonCompliantHighCount INT,
+                NonCompliantMediumCount INT,
+                NonCompliantLowCount INT,
+                NonCompliantInformationalCount INT,
+                NonCompliantUnspecifiedCount INT,
+                CompliantCriticalCount INT,
+                CompliantHighCount INT,
+                CompliantMediumCount INT,
+                CompliantLowCount INT,
+                CompliantInformationalCount INT,
+                CompliantUnspecifiedCount INT
+            );
+            UPDATE ssm_patchcompliance SET complianceSummary = "AWS:ComplianceItem".Content.Patch['ComplianceSummary'];
+
+            ALTER TABLE ssm_patchcompliance ADD COLUMN IF NOT EXISTS patches MAP(
+                VARCHAR,
+                STRUCT(
+                    Id VARCHAR,
+                    Title VARCHAR,
+                    Status VARCHAR,
+                    InstalledTime TIMESTAMPTZ,
+                    Severity VARCHAR,
+                    PatchSeverity VARCHAR,
+                    Classification VARCHAR,
+                    PatchState VARCHAR,
+                    PatchBaselineId VARCHAR,
+                    PatchGroup VARCHAR,
+                    CVEIds VARCHAR[]
+                )
+            );
+            UPDATE ssm_patchcompliance SET patches = map_from_entries(
+                list_transform(
+                    list_filter(
+                        map_entries("AWS:ComplianceItem".Content.Patch),
+                        lambda kv: kv.key != 'ComplianceSummary'
+                    ),
+                    lambda kv: struct_update(kv, value := struct_update(kv.value,
+                        Title := nullif(kv.value.Title, ''),
+                        Status := nullif(kv.value.Status, ''),
+                        InstalledTime := nullif(kv.value.InstalledTime, ''),
+                        PatchSeverity := nullif(kv.value.PatchSeverity, ''),
+                        Classification := nullif(kv.value.Classification, ''),
+                        PatchGroup := nullif(kv.value.PatchGroup, ''),
+                        CVEIds := split(kv.value.CVEIds, ',')
+                    ))
+                )
+            );
+            ALTER TABLE ssm_patchcompliance DROP COLUMN "AWS:ComplianceItem";"#
+    },
 ];
 
 struct GlobalAlteration {
