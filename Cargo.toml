@@ -37,5 +37,6 @@ tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
+toml = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"

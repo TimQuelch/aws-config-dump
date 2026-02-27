@@ -9,11 +9,11 @@ use duckdb::params;
 use tempfile::{NamedTempFile, TempDir, TempPath};
 use tracing::{debug, error, info};
 
-use crate::config::Config;
+use crate::config;
 use crate::util;
 
 pub async fn delete_db() -> anyhow::Result<()> {
-    let path = Config::get().db_path();
+    let path = config::db_path().await;
     if path.exists() {
         info!(db = %path.to_string_lossy(), "deleting existing database");
         tokio::fs::remove_file(path).await?;
@@ -21,8 +21,8 @@ pub async fn delete_db() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn connect_to_db() -> anyhow::Result<duckdb::Connection> {
-    let db_conn = duckdb::Connection::open(Config::get().db_path())
+pub async fn connect_to_db() -> anyhow::Result<duckdb::Connection> {
+    let db_conn = duckdb::Connection::open(config::db_path().await)
         .inspect_err(|e| error!(error = %e, "failed open duckdb database"))?;
 
     // helps with read_json on very large tables

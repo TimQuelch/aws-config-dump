@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{os::unix::process::CommandExt, process::Command};
+use std::{collections::HashMap, os::unix::process::CommandExt, process::Command};
 
 use aws_sdk_config::types::ResourceType;
 
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::util;
 
 enum FieldSelection {
@@ -22,6 +22,7 @@ fn build_query(
     all_fields: bool,
     user_query: &str,
     include_account_name: bool,
+    extra_columns: &HashMap<String, Vec<String>>,
 ) -> String {
     let table = resource_type.map_or_else(|| "resources".to_string(), util::resource_table_name);
     let field_selection = if all_fields {
@@ -32,7 +33,7 @@ fn build_query(
             FieldSelection::Custom,
         )
     };
-    let columns = column_selection(field_selection, include_account_name);
+    let columns = column_selection(field_selection, include_account_name, extra_columns);
     let account_clause = accounts
         .filter(|a| !a.is_empty())
         .map_or_else(String::new, |accounts| {
@@ -52,8 +53,8 @@ fn build_query(
     )
 }
 
-fn has_account_names() -> bool {
-    let Ok(db_conn) = duckdb::Connection::open(Config::get().db_path()) else {
+async fn has_account_names() -> bool {
+    let Ok(db_conn) = duckdb::Connection::open(config::db_path().await) else {
         return false;
     };
     db_conn
@@ -69,7 +70,8 @@ fn has_account_names() -> bool {
 /// Query the database
 ///
 /// Calls the duckdb CLI instead of using the SDK so we don't need to implement TSV formatting here
-pub fn query(
+pub async fn query(
+    config: &Config,
     resource_type: Option<&str>,
     accounts: Option<&[String]>,
     fields: Option<Vec<String>>,
@@ -82,12 +84,13 @@ pub fn query(
         fields,
         all_fields,
         query,
-        has_account_names(),
+        has_account_names().await,
+        &config.query_extra_columns,
     );
 
     Command::new("duckdb")
         .args(["-readonly", "-safe", "-cmd", ".mode tabs"])
-        .arg(Config::get().db_path())
+        .arg(config::db_path().await)
         .arg(&final_query)
         .spawn()?
         .wait()?;
@@ -96,15 +99,19 @@ pub fn query(
 }
 
 /// Open an interactive `DuckDB` REPL against the local database
-pub fn repl() -> anyhow::Result<()> {
-    let err = Command::new("duckdb").arg(Config::get().db_path()).exec();
+pub async fn repl() -> anyhow::Result<()> {
+    let err = Command::new("duckdb").arg(config::db_path().await).exec();
     Err(anyhow::Error::from(err))
 }
 
 const DEFAULT_COLUMNS: &str = "resourceType, accountId, awsRegion, resourceId, resourceName";
 const BASE_RESOURCE_DEFAULT_COLUMNS: &str = "accountId, awsRegion, resourceId";
 
-fn column_selection(fields: FieldSelection, include_account_name: bool) -> String {
+fn column_selection(
+    fields: FieldSelection,
+    include_account_name: bool,
+    extra_columns: &HashMap<String, Vec<String>>,
+) -> String {
     match fields {
         FieldSelection::All => "*".to_string(),
         FieldSelection::Custom(fields) => fields.join(","),
@@ -113,16 +120,24 @@ fn column_selection(fields: FieldSelection, include_account_name: bool) -> Strin
             "accountId, accountName",
             usize::from(include_account_name),
         ),
-        FieldSelection::Default(Some(resource_type)) => resource_default_columns(&resource_type)
-            .replacen(
+        FieldSelection::Default(Some(resource_type)) => {
+            resource_default_columns(&resource_type, extra_columns).replacen(
                 "accountId",
                 "accountId, accountName",
                 usize::from(include_account_name),
-            ),
+            )
+        }
     }
 }
 
-fn resource_default_columns(resource_type: &ResourceType) -> String {
+fn resource_default_columns(
+    resource_type: &ResourceType,
+    extra_columns: &HashMap<String, Vec<String>>,
+) -> String {
+    let table_name = util::resource_table_name(resource_type.as_str());
+    if let Some(cols) = extra_columns.get(&table_name) {
+        return format!("{BASE_RESOURCE_DEFAULT_COLUMNS},{}", cols.join(","));
+    }
     BASE_RESOURCE_DEFAULT_COLUMNS.to_string()
         + match resource_type {
             ResourceType::Role => ",arn",
@@ -136,11 +151,21 @@ fn resource_default_columns(resource_type: &ResourceType) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]
     fn no_resource_type_uses_resources_table() {
-        let q = build_query(None, None, None, false, "SELECT * FROM input", false);
+        let q = build_query(
+            None,
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert!(q.contains("query_table('resources')"));
     }
 
@@ -153,13 +178,22 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains("query_table('ec2_instance')"));
     }
 
     #[test]
     fn account_join_always_present() {
-        let q = build_query(None, None, None, false, "SELECT * FROM input", false);
+        let q = build_query(
+            None,
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert!(q.contains("LEFT JOIN accounts USING (accountId)"));
     }
 
@@ -172,6 +206,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(
             q.contains("WHERE accountId IN ('123456789012') OR accountName IN ('123456789012')")
@@ -187,6 +222,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains(
             "WHERE accountId IN ('123456789012', 'prod') OR accountName IN ('123456789012', 'prod')"
@@ -195,32 +231,80 @@ mod tests {
 
     #[test]
     fn no_account_filter_no_where_clause() {
-        let q = build_query(None, None, None, false, "SELECT * FROM input", false);
+        let q = build_query(
+            None,
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert!(!q.contains("WHERE"));
     }
 
     #[test]
     fn empty_account_filter_no_where_clause() {
-        let q = build_query(None, Some(&[]), None, false, "SELECT * FROM input", false);
+        let q = build_query(
+            None,
+            Some(&[]),
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert!(!q.contains("WHERE"));
     }
 
     #[test]
     fn user_query_included() {
-        let q = build_query(None, None, None, false, "SELECT count(*) FROM input", false);
+        let q = build_query(
+            None,
+            None,
+            None,
+            false,
+            "SELECT count(*) FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert!(q.contains("SELECT count(*) FROM input;"));
     }
 
     #[test]
     fn all_fields_selects_star() {
-        let q = build_query(None, None, None, true, "SELECT * FROM input", false);
+        let q = build_query(
+            None,
+            None,
+            None,
+            true,
+            "SELECT * FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert!(q.contains("SELECT * FROM query_table("));
     }
 
     #[test]
     fn all_fields_include_account_name_has_no_effect() {
-        let a = build_query(None, None, None, true, "SELECT * FROM input", true);
-        let b = build_query(None, None, None, true, "SELECT * FROM input", false);
+        let a = build_query(
+            None,
+            None,
+            None,
+            true,
+            "SELECT * FROM input",
+            true,
+            &HashMap::new(),
+        );
+        let b = build_query(
+            None,
+            None,
+            None,
+            true,
+            "SELECT * FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert_eq!(a, b);
     }
 
@@ -234,6 +318,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains("SELECT resourceId,awsRegion FROM"));
     }
@@ -248,6 +333,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains("SELECT resourceId,accountName FROM"));
     }
@@ -262,6 +348,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             true,
+            &HashMap::new(),
         );
         let b = build_query(
             None,
@@ -270,19 +357,36 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert_eq!(a, b);
     }
 
     #[test]
     fn default_columns_no_resource_type() {
-        let q = build_query(None, None, None, false, "SELECT * FROM input", false);
+        let q = build_query(
+            None,
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &HashMap::new(),
+        );
         assert!(q.contains(&format!("SELECT {DEFAULT_COLUMNS} FROM")));
     }
 
     #[test]
     fn default_columns_no_resource_type_with_account_name() {
-        let q = build_query(None, None, None, false, "SELECT * FROM input", true);
+        let q = build_query(
+            None,
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            true,
+            &HashMap::new(),
+        );
         assert!(q.contains(
             "SELECT resourceType, accountId, accountName, awsRegion, resourceId, resourceName FROM",
         ));
@@ -297,6 +401,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains(&format!(
             "SELECT {BASE_RESOURCE_DEFAULT_COLUMNS} FROM query_table"
@@ -312,6 +417,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             true,
+            &HashMap::new(),
         );
         assert!(q.contains("SELECT accountId, accountName, awsRegion, resourceId FROM"));
     }
@@ -325,6 +431,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains(&format!("SELECT {BASE_RESOURCE_DEFAULT_COLUMNS},arn FROM")));
     }
@@ -338,6 +445,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             true,
+            &HashMap::new(),
         );
         assert!(q.contains("SELECT accountId, accountName, awsRegion, resourceId,arn FROM"));
     }
@@ -351,6 +459,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains(&format!(
             "SELECT {BASE_RESOURCE_DEFAULT_COLUMNS},tags['Name'],cidrBlock FROM"
@@ -366,6 +475,7 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains(&format!(
             "SELECT {BASE_RESOURCE_DEFAULT_COLUMNS},vpcId,tags['Name'],cidrBlock,availabilityZone,availableIpAddressCount FROM"
@@ -381,10 +491,63 @@ mod tests {
             false,
             "SELECT * FROM input",
             false,
+            &HashMap::new(),
         );
         assert!(q.contains("query_table('ec2_instance')"));
         assert!(
             q.contains("WHERE accountId IN ('123456789012') OR accountName IN ('123456789012')")
         );
+    }
+
+    #[test]
+    fn config_extra_columns_override_hardcoded_for_known_type() {
+        let extra = HashMap::from([(
+            "iam_role".to_string(),
+            vec!["roleName".to_string(), "arn".to_string()],
+        )]);
+        let q = build_query(
+            Some("AWS::IAM::Role"),
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &extra,
+        );
+        assert!(q.contains(&format!(
+            "SELECT {BASE_RESOURCE_DEFAULT_COLUMNS},roleName,arn FROM"
+        )));
+    }
+
+    #[test]
+    fn config_extra_columns_used_for_type_with_no_hardcoded_columns() {
+        let extra = HashMap::from([("ec2_instance".to_string(), vec!["instanceType".to_string()])]);
+        let q = build_query(
+            Some("AWS::EC2::Instance"),
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &extra,
+        );
+        assert!(q.contains(&format!(
+            "SELECT {BASE_RESOURCE_DEFAULT_COLUMNS},instanceType FROM"
+        )));
+    }
+
+    #[test]
+    fn absent_from_config_falls_back_to_hardcoded_columns() {
+        let extra = HashMap::new();
+        let q = build_query(
+            Some("AWS::IAM::Role"),
+            None,
+            None,
+            false,
+            "SELECT * FROM input",
+            false,
+            &extra,
+        );
+        assert!(q.contains(&format!("SELECT {BASE_RESOURCE_DEFAULT_COLUMNS},arn FROM")));
     }
 }

@@ -13,8 +13,9 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    #[arg(short, long, global = true, default_value = "db")]
-    pub db_name: String,
+    /// Path to config file (overrides XDG config dir)
+    #[arg(short, long, global = true)]
+    pub config: Option<std::path::PathBuf>,
 }
 
 #[derive(Subcommand)]

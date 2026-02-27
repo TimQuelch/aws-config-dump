@@ -8,6 +8,7 @@ use clap_complete::CompleteEnv;
 use cli::{Cli, Command};
 
 mod build;
+mod builtin_alterations;
 mod cli;
 mod completion;
 mod config;
@@ -30,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    config::Config::init(cli.db_name);
+    let config = config::load(cli.config.as_deref()).await?;
 
     match cli.command {
         Command::Build {
@@ -47,21 +48,33 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 build::FetchSource::Api
             };
-            build::build_database(aggregator_name, fetch_source, rebuild, fetch_org_accounts).await
+            let effective_aggregator = aggregator_name.or_else(|| config.aggregator_name.clone());
+            build::build_database(
+                &config,
+                effective_aggregator,
+                fetch_source,
+                rebuild,
+                fetch_org_accounts,
+            )
+            .await
         }
-        Command::Repl => query::repl(),
+        Command::Repl => query::repl().await,
         Command::Query {
             resource_type,
             accounts,
             fields,
             all_fields,
             query,
-        } => query::query(
-            resource_type.as_deref(),
-            accounts.as_deref(),
-            fields,
-            all_fields,
-            &query,
-        ),
+        } => {
+            query::query(
+                &config,
+                resource_type.as_deref(),
+                accounts.as_deref(),
+                fields,
+                all_fields,
+                &query,
+            )
+            .await
+        }
     }
 }

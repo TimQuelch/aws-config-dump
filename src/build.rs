@@ -15,6 +15,7 @@ use tokio::{
 };
 use tracing::info;
 
+use crate::config::Config;
 use crate::config_fetch_client::{ConfigFetchClient, DispatchingClient};
 use crate::db;
 use crate::org_client;
@@ -28,6 +29,7 @@ pub enum FetchSource {
 }
 
 pub async fn build_database(
+    config: &Config,
     aggregator: Option<String>,
     fetch_source: FetchSource,
     should_rebuild: bool,
@@ -37,7 +39,7 @@ pub async fn build_database(
         db::delete_db().await?;
     }
 
-    let db_conn = db::connect_to_db()?;
+    let db_conn = db::connect_to_db().await?;
 
     match fetch_source {
         FetchSource::Snapshots => {
@@ -71,7 +73,7 @@ pub async fn build_database(
     };
 
     db::build_derived_tables(&db_conn, org_accounts)?;
-    schema_alterations::apply_schema_alterations(&db_conn);
+    schema_alterations::apply_schema_alterations(config, &db_conn);
     Ok(())
 }
 

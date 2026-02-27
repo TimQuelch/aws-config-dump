@@ -6,9 +6,11 @@ use std::{convert::Into, sync::LazyLock};
 
 use clap::{ArgMatches, CommandFactory};
 use clap_complete::{CompletionCandidate, engine::ValueCandidates};
+use tokio::sync::oneshot;
+use tokio::task;
 
 use crate::cli::Cli;
-use crate::config::Config;
+use crate::config;
 use crate::util;
 
 static PARSED_ARGS: LazyLock<ArgMatches> = LazyLock::new(|| {
@@ -22,9 +24,10 @@ static PARSED_ARGS: LazyLock<ArgMatches> = LazyLock::new(|| {
 });
 
 fn db_conn() -> duckdb::Connection {
-    let db_name = PARSED_ARGS.get_one::<String>("db_name").unwrap();
-    Config::init(db_name);
-    duckdb::Connection::open(Config::get().db_path()).unwrap()
+    let (tx, rx) = oneshot::channel();
+    task::spawn(async move { tx.send(config::db_path().await) });
+    let path = task::block_in_place(|| rx.blocking_recv().expect("failed to get db path"));
+    duckdb::Connection::open(path).expect("failed to connect to database")
 }
 
 /// Run a given query and return the results as completion candidates. First returned column is the

@@ -11,7 +11,7 @@
     pre-commit.inputs.nixpkgs.follows = "nixpkgs";
     advisory-db.url = "github:rustsec/advisory-db";
     advisory-db.flake = false;
-    jailed-claude.url = "github:TimQuelch/jailed-claude/develop";
+    jailed-claude.url = "github:TimQuelch/jailed-claude";
     jailed-claude.inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -33,7 +33,6 @@
           inherit system;
           config.allowUnfree = true;
           overlays = [
-            jailed-claude.overlays.default
             (final: prev: { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; })
           ];
         };
@@ -101,12 +100,15 @@
           # recursive calls
           default = self.devShells.${system}.base.overrideAttrs (prevAttrs: {
             nativeBuildInputs = prevAttrs.nativeBuildInputs ++ [
-              (jailed-claude.lib.makeJailedClaude {
-                inherit pkgs;
-                extraReadWritePaths = [ "~/.cargo" ];
-                persistHome = true;
-                wrapper = entry: "nix develop .#base -c ${entry}";
-              })
+              (
+                (jailed-claude.lib.makeJailedClaude {
+                  inherit pkgs;
+                  extraReadWritePaths = [ "~/.cargo" ];
+                  persistHome = true;
+                  wrapper = entry: "nix develop .#base -c ${entry}";
+                }).override
+                { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; }
+              )
             ];
           });
           base = craneLib.devShell {
@@ -116,6 +118,7 @@
               with pkgs;
               [
                 bacon
+                rust-analyzer
               ]
               ++ preCommit.enabledPackages;
           };
