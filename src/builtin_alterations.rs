@@ -4,11 +4,11 @@
 
 use std::sync::LazyLock;
 
-use crate::config::{ConfigGlobalSchemaAlteration, ConfigSchemaAlteration};
+use crate::config::{GlobalSchemaAlteration, SchemaAlteration};
 
-pub(crate) static ALTERATIONS: LazyLock<Vec<ConfigSchemaAlteration>> = LazyLock::new(|| {
+pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
     vec![
-        ConfigSchemaAlteration {
+        SchemaAlteration {
             description: Some("extract ec2_instance state name and reason".to_string()),
             dependencies: vec!["ec2_instance".to_string()],
             condition: None,
@@ -16,7 +16,7 @@ pub(crate) static ALTERATIONS: LazyLock<Vec<ConfigSchemaAlteration>> = LazyLock:
              ALTER TABLE ec2_instance ALTER COLUMN stateReason TYPE varchar USING struct_extract(stateReason, 'message');"
                 .to_string(),
         },
-        ConfigSchemaAlteration {
+        SchemaAlteration {
             description: Some("transform ssm_managedinstanceinventory".to_string()),
             dependencies: vec!["ssm_managedinstanceinventory".to_string()],
             condition: None,
@@ -79,7 +79,7 @@ pub(crate) static ALTERATIONS: LazyLock<Vec<ConfigSchemaAlteration>> = LazyLock:
                 FROM ssm_managedinstanceinventory;"#
                 .to_string(),
         },
-        ConfigSchemaAlteration {
+        SchemaAlteration {
             description: Some("transform ssm_patchcompliance".to_string()),
             dependencies: vec!["ssm_patchcompliance".to_string()],
             condition: None,
@@ -143,15 +143,14 @@ pub(crate) static ALTERATIONS: LazyLock<Vec<ConfigSchemaAlteration>> = LazyLock:
     ]
 });
 
-pub(crate) static GLOBAL_ALTERATIONS: LazyLock<Vec<ConfigGlobalSchemaAlteration>> =
-    LazyLock::new(|| {
-        vec![ConfigGlobalSchemaAlteration {
-            description: Some("add tagName column from tags['Name']".to_string()),
-            condition: Some(
-                r#"SELECT count(*) > 0 FROM "{table}" WHERE tags['Name'] IS NOT NULL"#.to_string(),
-            ),
-            sql: r#"ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
+pub static GLOBAL_ALTERATIONS: LazyLock<Vec<GlobalSchemaAlteration>> = LazyLock::new(|| {
+    vec![GlobalSchemaAlteration {
+        description: Some("add tagName column from tags['Name']".to_string()),
+        condition: Some(
+            r#"SELECT count(*) > 0 FROM "{table}" WHERE tags['Name'] IS NOT NULL"#.to_string(),
+        ),
+        sql: r#"ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
                UPDATE "{table}" SET tagName = tags['Name'];"#
-                .to_string(),
-        }]
-    });
+            .to_string(),
+    }]
+});

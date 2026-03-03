@@ -8,15 +8,35 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use tokio::fs;
 
 use crate::builtin_alterations;
 
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+struct DbConfig {
+    aggregator_name: Option<String>,
+    path: Option<PathBuf>,
+}
+
+impl DbConfig {
+    fn resolve(&self, name: &str) -> (PathBuf, Option<String>) {
+        (
+            self.path.clone().unwrap_or_else(|| {
+                project_dirs()
+                    .data_dir()
+                    .join(name)
+                    .with_added_extension("duckdb")
+            }),
+            self.aggregator_name.clone(),
+        )
+    }
+}
+
 #[derive(Debug, Deserialize)]
-pub struct ConfigSchemaAlteration {
+pub struct SchemaAlteration {
     pub description: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
@@ -25,64 +45,126 @@ pub struct ConfigSchemaAlteration {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ConfigGlobalSchemaAlteration {
+pub struct GlobalSchemaAlteration {
     pub description: Option<String>,
     pub condition: Option<String>,
     pub sql: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
+pub struct ConfigFile {
+    default_database: Option<String>,
+    #[serde(default)]
+    databases: HashMap<String, DbConfig>,
+    #[serde(default)]
+    query_extra_columns: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    schema_alterations: Vec<SchemaAlteration>,
+    #[serde(default)]
+    global_schema_alterations: Vec<GlobalSchemaAlteration>,
+}
+
+impl ConfigFile {
+    pub async fn load(path: Option<&Path>) -> Result<Option<ConfigFile>> {
+        let file_contents = if let Some(path) = path {
+            Some(fs::read(path).await?)
+        } else {
+            read_or_default(&project_dirs().config_dir().join("config.toml")).await?
+        };
+        Ok(file_contents
+            .map(|x| toml::from_slice(x.as_slice()))
+            .transpose()?)
+    }
+}
+
+async fn read_or_default(path: &Path) -> Result<Option<Vec<u8>>> {
+    match fs::read(path).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub struct Config {
+    pub db_path: PathBuf,
     pub aggregator_name: Option<String>,
-    #[serde(default)]
     pub query_extra_columns: HashMap<String, Vec<String>>,
-    #[serde(default)]
-    pub schema_alterations: Vec<ConfigSchemaAlteration>,
-    #[serde(default)]
-    pub global_schema_alterations: Vec<ConfigGlobalSchemaAlteration>,
+    pub schema_alterations: Vec<SchemaAlteration>,
+    pub global_schema_alterations: Vec<GlobalSchemaAlteration>,
 }
 
 impl Config {
-    pub fn alterations_iter(&self) -> impl Iterator<Item = &ConfigSchemaAlteration> {
+    pub fn load(config_file: Option<ConfigFile>, db_name: Option<&str>) -> Result<Config> {
+        let (db_path, aggregator_name) = Config::resolve_db(config_file.as_ref(), db_name)?;
+
+        let (query_extra_columns, schema_alterations, global_schema_alterations) = config_file
+            .map(|x| {
+                (
+                    x.query_extra_columns,
+                    x.schema_alterations,
+                    x.global_schema_alterations,
+                )
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            db_path,
+            aggregator_name,
+            query_extra_columns,
+            schema_alterations,
+            global_schema_alterations,
+        })
+    }
+
+    fn resolve_db(
+        config_file: Option<&ConfigFile>,
+        db: Option<&str>,
+    ) -> Result<(PathBuf, Option<String>)> {
+        match (config_file, db) {
+            (Some(file), Some(db)) => {
+                let Some(db_conf) = file.databases.get(db) else {
+                    bail!("database '{db}' not found in config")
+                };
+                Ok(db_conf.resolve(db))
+            }
+            (Some(file), None) if file.default_database.is_some() => {
+                let default = file
+                    .default_database
+                    .as_ref()
+                    .expect("default_db should be defined");
+                let Some(db_conf) = file.databases.get(default) else {
+                    bail!("default database '{default}' not found in config")
+                };
+                Ok(db_conf.resolve(default))
+            }
+            (Some(file), None) if file.databases.len() == 1 => Ok(file
+                .databases
+                .iter()
+                .next()
+                .map(|(name, db_conf)| db_conf.resolve(name))
+                .expect("expected exactly 1 item")),
+            (Some(file), None) if file.databases.is_empty() => {
+                Ok(DbConfig::default().resolve("db"))
+            }
+            (Some(_), None) => bail!(
+                "multiple databases configured. configure default_database or specify --db flag"
+            ),
+            (None, Some(db)) => Ok(DbConfig::default().resolve(db)),
+            (None, None) => Ok(DbConfig::default().resolve("db")),
+        }
+    }
+
+    pub fn alterations(&self) -> impl IntoIterator<Item = &SchemaAlteration> {
         builtin_alterations::ALTERATIONS
             .iter()
             .chain(&self.schema_alterations)
     }
 
-    pub fn global_alterations_iter(&self) -> impl Iterator<Item = &ConfigGlobalSchemaAlteration> {
+    pub fn global_alterations(&self) -> impl IntoIterator<Item = &GlobalSchemaAlteration> {
         builtin_alterations::GLOBAL_ALTERATIONS
             .iter()
             .chain(&self.global_schema_alterations)
     }
-}
-
-async fn load_from_path(path: &Path) -> Result<Config> {
-    let bytes = fs::read(path).await?;
-    Ok(toml::from_slice(bytes.as_slice())?)
-}
-
-async fn load_or_default(path: &Path) -> Result<Config> {
-    match fs::read(path).await {
-        Ok(bytes) => Ok(toml::from_slice(bytes.as_slice())?),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(Config::default()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-pub async fn load(path: Option<&Path>) -> Result<Config> {
-    if let Some(p) = path {
-        load_from_path(p).await
-    } else {
-        load_or_default(&project_dirs().config_dir().join("config.toml")).await
-    }
-}
-
-pub async fn db_path() -> PathBuf {
-    let dir = project_dirs().data_dir().to_path_buf();
-    fs::create_dir_all(&dir)
-        .await
-        .expect("Error while creating data dir");
-    dir.join("db").with_added_extension("duckdb")
 }
 
 fn project_dirs() -> ProjectDirs {
@@ -96,8 +178,9 @@ mod tests {
 
     #[test]
     fn empty_toml_deserializes_to_defaults() {
-        let config: Config = toml::from_str("").unwrap();
-        assert!(config.aggregator_name.is_none());
+        let config: ConfigFile = toml::from_str("").unwrap();
+        assert!(config.default_database.is_none());
+        assert!(config.databases.is_empty());
         assert!(config.query_extra_columns.is_empty());
         assert!(config.schema_alterations.is_empty());
         assert!(config.global_schema_alterations.is_empty());
@@ -106,7 +189,13 @@ mod tests {
     #[test]
     fn full_config_deserializes_correctly() {
         let toml_str = r#"
+default_database = "default"
+
+[databases.default]
 aggregator_name = "my-aggregator"
+
+[databases.other]
+path = "/path/to/db.otherext"
 
 [query_extra_columns]
 ec2_vpc = ["tags['Name']", "cidrBlock"]
@@ -122,8 +211,27 @@ description = "Global field"
 condition = 'SELECT count(*) > 0 FROM "{table}"'
 sql = 'ALTER TABLE "{table}" ADD COLUMN bar VARCHAR'
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.aggregator_name.as_deref(), Some("my-aggregator"));
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.default_database.as_deref(), Some("default"));
+        assert_eq!(
+            config.databases,
+            HashMap::from_iter(vec![
+                (
+                    "default".to_owned(),
+                    DbConfig {
+                        path: None,
+                        aggregator_name: Some("my-aggregator".to_owned())
+                    }
+                ),
+                (
+                    "other".to_owned(),
+                    DbConfig {
+                        path: Some(PathBuf::from("/path/to/db.otherext")),
+                        aggregator_name: None
+                    }
+                ),
+            ])
+        );
         assert_eq!(
             config.query_extra_columns["ec2_vpc"],
             vec!["tags['Name']", "cidrBlock"]
@@ -144,7 +252,7 @@ sql = 'ALTER TABLE "{table}" ADD COLUMN bar VARCHAR'
 dependencies = []
 sql = "SELECT 1"
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
         let sa = &config.schema_alterations[0];
         assert!(sa.description.is_none());
         assert!(sa.condition.is_none());
@@ -157,7 +265,7 @@ sql = "SELECT 1"
 [[global_schema_alterations]]
 sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
         assert_eq!(
             config.global_schema_alterations[0].sql,
             "ALTER TABLE {table} ADD COLUMN x VARCHAR"
@@ -168,51 +276,74 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
     async fn load_from_path_missing_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let result = load_from_path(&path).await;
+        let result = ConfigFile::load(Some(&path)).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn load_or_default_missing_file_returns_default() {
+    async fn read_or_default_missing_file_returns_default() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let config = load_or_default(&path).await.unwrap();
-        assert!(config.aggregator_name.is_none());
-        assert!(config.query_extra_columns.is_empty());
+        let buf = read_or_default(&path).await.unwrap();
+        assert!(buf.is_none());
     }
 
     #[tokio::test]
-    async fn load_or_default_existing_file_returns_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        tokio::fs::write(&path, r#"aggregator_name = "from-file""#)
-            .await
-            .unwrap();
-        let config = load_or_default(&path).await.unwrap();
-        assert_eq!(config.aggregator_name.as_deref(), Some("from-file"));
+    async fn read_or_default_existing_file_returns_config() {
+        let path = tempfile::Builder::new()
+            .tempfile()
+            .unwrap()
+            .into_temp_path();
+        tokio::fs::write(&path, "hello").await.unwrap();
+        let contents = read_or_default(&path).await.unwrap();
+        assert_eq!(
+            contents.and_then(|x| String::from_utf8(x).ok()).as_deref(),
+            Some("hello")
+        );
     }
 
     #[test]
     fn alterations_iter_chains_builtins_and_config() {
-        let toml_str = r#"
-[[schema_alterations]]
-dependencies = []
-sql = "SELECT 42"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let items: Vec<_> = config.alterations_iter().collect();
+        let config: Config = Config::load(
+            Some(ConfigFile {
+                default_database: None,
+                databases: HashMap::new(),
+                query_extra_columns: HashMap::new(),
+                schema_alterations: vec![SchemaAlteration {
+                    dependencies: vec![],
+                    condition: None,
+                    description: None,
+                    sql: "SELECT 42".to_owned(),
+                }],
+                global_schema_alterations: vec![],
+            }),
+            None,
+        )
+        .unwrap();
+        let items: Vec<_> = config.alterations().into_iter().collect();
         assert_eq!(items.len(), builtin_alterations::ALTERATIONS.len() + 1);
         assert_eq!(items.last().unwrap().sql, "SELECT 42");
     }
 
     #[test]
     fn global_alterations_iter_chains_builtins_and_config() {
-        let toml_str = r#"
-[[global_schema_alterations]]
-sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let items: Vec<_> = config.global_alterations_iter().collect();
+        let config: Config = Config::load(
+            Some(ConfigFile {
+                default_database: None,
+                databases: HashMap::new(),
+                query_extra_columns: HashMap::new(),
+                schema_alterations: vec![],
+                global_schema_alterations: vec![GlobalSchemaAlteration {
+                    condition: None,
+                    description: None,
+                    sql: "ALTER TABLE {table} ADD COLUMN x VARCHAR".to_owned(),
+                }],
+            }),
+            None,
+        )
+        .unwrap();
+
+        let items: Vec<_> = config.global_alterations().into_iter().collect();
         assert_eq!(
             items.len(),
             builtin_alterations::GLOBAL_ALTERATIONS.len() + 1
@@ -220,31 +351,6 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
         assert_eq!(
             items.last().unwrap().sql,
             "ALTER TABLE {table} ADD COLUMN x VARCHAR"
-        );
-    }
-
-    #[test]
-    fn aggregator_name_comes_from_file() {
-        let config: Config = toml::from_str(r#"aggregator_name = "my-aggregator""#).unwrap();
-        assert_eq!(config.aggregator_name.as_deref(), Some("my-aggregator"));
-    }
-
-    #[test]
-    fn no_aggregator_name_when_absent_from_file() {
-        let config: Config = toml::from_str("").unwrap();
-        assert!(config.aggregator_name.is_none());
-    }
-
-    #[test]
-    fn query_extra_columns_come_from_file() {
-        let toml_str = r#"
-[query_extra_columns]
-ec2_vpc = ["cidrBlock"]
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            config.query_extra_columns["ec2_vpc"],
-            vec!["cidrBlock".to_string()]
         );
     }
 }

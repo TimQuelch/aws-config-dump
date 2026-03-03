@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::path::PathBuf;
 use std::{convert::Into, sync::LazyLock};
 
 use clap::{ArgMatches, CommandFactory};
@@ -10,7 +11,7 @@ use tokio::sync::oneshot;
 use tokio::task;
 
 use crate::cli::Cli;
-use crate::config;
+use crate::config::{Config, ConfigFile};
 use crate::util;
 
 static PARSED_ARGS: LazyLock<ArgMatches> = LazyLock::new(|| {
@@ -23,11 +24,19 @@ static PARSED_ARGS: LazyLock<ArgMatches> = LazyLock::new(|| {
         .get_matches_from(std::env::args_os().skip(2))
 });
 
-fn db_conn() -> duckdb::Connection {
+static CONFIG: LazyLock<Config> = LazyLock::new(|| {
+    let config = PARSED_ARGS.get_one::<PathBuf>("config").cloned();
+    let db = PARSED_ARGS.get_one::<String>("db").cloned();
+
     let (tx, rx) = oneshot::channel();
-    task::spawn(async move { tx.send(config::db_path().await) });
-    let path = task::block_in_place(|| rx.blocking_recv().expect("failed to get db path"));
-    duckdb::Connection::open(path).expect("failed to connect to database")
+    tokio::spawn(async move { tx.send(ConfigFile::load(config.as_deref()).await) });
+    let config_file = task::block_in_place(|| rx.blocking_recv().unwrap()).unwrap();
+
+    Config::load(config_file, db.as_deref()).unwrap()
+});
+
+fn db_conn() -> duckdb::Connection {
+    duckdb::Connection::open(&CONFIG.db_path).expect("failed to connect to database")
 }
 
 /// Run a given query and return the results as completion candidates. First returned column is the

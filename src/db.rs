@@ -3,26 +3,25 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use chrono::{DateTime, Days, Utc};
 use duckdb::params;
 use tempfile::{NamedTempFile, TempDir, TempPath};
 use tracing::{debug, error, info};
 
-use crate::config;
 use crate::util;
 
-pub async fn delete_db() -> anyhow::Result<()> {
-    let path = config::db_path().await;
-    if path.exists() {
+pub async fn delete_db(path: &Path) -> anyhow::Result<()> {
+    if tokio::fs::try_exists(path).await? {
         info!(db = %path.to_string_lossy(), "deleting existing database");
         tokio::fs::remove_file(path).await?;
     }
     Ok(())
 }
 
-pub async fn connect_to_db() -> anyhow::Result<duckdb::Connection> {
-    let db_conn = duckdb::Connection::open(config::db_path().await)
+pub fn connect_to_db(path: &Path) -> anyhow::Result<duckdb::Connection> {
+    let db_conn = duckdb::Connection::open(path)
         .inspect_err(|e| error!(error = %e, "failed open duckdb database"))?;
 
     // helps with read_json on very large tables

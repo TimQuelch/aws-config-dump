@@ -36,10 +36,10 @@ pub async fn build_database(
     fetch_org_accounts: bool,
 ) -> anyhow::Result<()> {
     if should_rebuild {
-        db::delete_db().await?;
+        db::delete_db(&config.db_path).await?;
     }
 
-    let db_conn = db::connect_to_db().await?;
+    let db_conn = db::connect_to_db(&config.db_path)?;
 
     match fetch_source {
         FetchSource::Snapshots => {

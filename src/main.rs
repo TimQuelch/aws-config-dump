@@ -6,6 +6,7 @@ use clap::{CommandFactory, Parser};
 use clap_complete::CompleteEnv;
 
 use cli::{Cli, Command};
+use config::{Config, ConfigFile};
 
 mod build;
 mod builtin_alterations;
@@ -31,7 +32,10 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let config = config::load(cli.config.as_deref()).await?;
+    let config = Config::load(
+        ConfigFile::load(cli.config.as_deref()).await?,
+        cli.db.as_deref(),
+    )?;
 
     match cli.command {
         Command::Build {
@@ -58,23 +62,20 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Repl => query::repl().await,
+        Command::Repl => query::repl(&config),
         Command::Query {
             resource_type,
             accounts,
             fields,
             all_fields,
             query,
-        } => {
-            query::query(
-                &config,
-                resource_type.as_deref(),
-                accounts.as_deref(),
-                fields,
-                all_fields,
-                &query,
-            )
-            .await
-        }
+        } => query::query(
+            &config,
+            resource_type.as_deref(),
+            accounts.as_deref(),
+            fields,
+            all_fields,
+            &query,
+        ),
     }
 }

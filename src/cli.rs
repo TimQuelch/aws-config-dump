@@ -16,6 +16,10 @@ pub struct Cli {
     /// Path to config file (overrides XDG config dir)
     #[arg(short, long, global = true)]
     pub config: Option<std::path::PathBuf>,
+
+    /// DB to use
+    #[arg(short, long, global = true)]
+    pub db: Option<String>,
 }
 
 #[derive(Subcommand)]

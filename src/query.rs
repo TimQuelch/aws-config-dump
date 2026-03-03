@@ -7,7 +7,7 @@ use std::{collections::HashMap, os::unix::process::CommandExt, process::Command}
 use aws_sdk_config::types::ResourceType;
 use duckdb::Connection;
 
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::util;
 
 enum FieldSelection {
@@ -84,7 +84,7 @@ fn table_has_tagname(db_conn: &Connection, table: &str) -> bool {
 /// Query the database
 ///
 /// Calls the duckdb CLI instead of using the SDK so we don't need to implement TSV formatting here
-pub async fn query(
+pub fn query(
     config: &Config,
     resource_type: Option<&str>,
     accounts: Option<&[String]>,
@@ -93,15 +93,14 @@ pub async fn query(
     query: &str,
 ) -> anyhow::Result<()> {
     let table = resource_type.map_or_else(|| "resources".to_string(), util::resource_table_name);
-    let (has_account_name, has_tagname) =
-        if let Ok(db_conn) = Connection::open(config::db_path().await) {
-            (
-                has_account_names(&db_conn),
-                table_has_tagname(&db_conn, &table),
-            )
-        } else {
-            (false, false)
-        };
+    let (has_account_name, has_tagname) = if let Ok(db_conn) = Connection::open(&config.db_path) {
+        (
+            has_account_names(&db_conn),
+            table_has_tagname(&db_conn, &table),
+        )
+    } else {
+        (false, false)
+    };
     let final_query = build_query(
         resource_type,
         accounts,
@@ -117,7 +116,7 @@ pub async fn query(
 
     Command::new("duckdb")
         .args(["-readonly", "-safe", "-cmd", ".mode tabs"])
-        .arg(config::db_path().await)
+        .arg(&config.db_path)
         .arg(&final_query)
         .spawn()?
         .wait()?;
@@ -126,8 +125,8 @@ pub async fn query(
 }
 
 /// Open an interactive `DuckDB` REPL against the local database
-pub async fn repl() -> anyhow::Result<()> {
-    let err = Command::new("duckdb").arg(config::db_path().await).exec();
+pub fn repl(config: &Config) -> anyhow::Result<()> {
+    let err = Command::new("duckdb").arg(&config.db_path).exec();
     Err(anyhow::Error::from(err))
 }
 

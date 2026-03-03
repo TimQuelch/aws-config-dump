@@ -4,11 +4,11 @@
 
 use tracing::{debug, error, info};
 
-use crate::config::{Config, ConfigGlobalSchemaAlteration, ConfigSchemaAlteration};
+use crate::config::{Config, GlobalSchemaAlteration, SchemaAlteration};
 use crate::util;
 
 pub fn apply_schema_alterations(config: &Config, db_conn: &duckdb::Connection) {
-    apply_alterations(db_conn, config.alterations_iter());
+    apply_alterations(db_conn, config.alterations());
 
     let table_names: Vec<String> =
         match db_conn.prepare_cached(r"SELECT resourceType FROM resourceTypes;") {
@@ -24,12 +24,12 @@ pub fn apply_schema_alterations(config: &Config, db_conn: &duckdb::Connection) {
                 .collect(),
         };
 
-    apply_global_alterations(db_conn, config.global_alterations_iter(), &table_names);
+    apply_global_alterations(db_conn, config.global_alterations(), &table_names);
 }
 
 fn apply_alterations<'a>(
     db_conn: &duckdb::Connection,
-    alterations: impl Iterator<Item = &'a ConfigSchemaAlteration>,
+    alterations: impl IntoIterator<Item = &'a SchemaAlteration>,
 ) {
     for alteration in alterations {
         let description = alteration.description.as_deref().unwrap_or("<unnamed>");
@@ -92,7 +92,7 @@ fn apply_alterations<'a>(
 
 fn apply_global_alterations<'a>(
     db_conn: &duckdb::Connection,
-    alterations: impl Iterator<Item = &'a ConfigGlobalSchemaAlteration>,
+    alterations: impl IntoIterator<Item = &'a GlobalSchemaAlteration>,
     table_names: &[String],
 ) {
     for alteration in alterations {
@@ -136,7 +136,7 @@ fn apply_global_alterations<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ConfigGlobalSchemaAlteration, ConfigSchemaAlteration};
+    use crate::config::{GlobalSchemaAlteration, SchemaAlteration};
 
     fn make_conn() -> duckdb::Connection {
         duckdb::Connection::open_in_memory().unwrap()
@@ -150,26 +150,26 @@ mod tests {
     #[test]
     fn config_alteration_skipped_when_dependency_missing() {
         let conn = make_conn();
-        let alteration = ConfigSchemaAlteration {
+        let alteration = SchemaAlteration {
             description: None,
             dependencies: vec!["nonexistent_table".to_string()],
             condition: None,
             sql: "ALTER TABLE nonexistent_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&conn, [alteration].iter());
+        apply_alterations(&conn, &[alteration]);
     }
 
     #[test]
     fn config_alteration_runs_when_dependencies_met() {
         let conn = make_conn();
         make_table(&conn, "my_table");
-        let alteration = ConfigSchemaAlteration {
+        let alteration = SchemaAlteration {
             description: None,
             dependencies: vec!["my_table".to_string()],
             condition: None,
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&conn, [alteration].iter());
+        apply_alterations(&conn, &[alteration]);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM information_schema.columns
@@ -185,13 +185,13 @@ mod tests {
     fn config_alteration_skipped_when_condition_false() {
         let conn = make_conn();
         make_table(&conn, "my_table");
-        let alteration = ConfigSchemaAlteration {
+        let alteration = SchemaAlteration {
             description: None,
             dependencies: vec!["my_table".to_string()],
             condition: Some("SELECT false".to_string()),
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&conn, [alteration].iter());
+        apply_alterations(&conn, &[alteration]);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM information_schema.columns
@@ -207,13 +207,13 @@ mod tests {
     fn config_alteration_runs_when_condition_true() {
         let conn = make_conn();
         make_table(&conn, "my_table");
-        let alteration = ConfigSchemaAlteration {
+        let alteration = SchemaAlteration {
             description: None,
             dependencies: vec!["my_table".to_string()],
             condition: Some("SELECT true".to_string()),
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&conn, [alteration].iter());
+        apply_alterations(&conn, &[alteration]);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM information_schema.columns
@@ -230,14 +230,14 @@ mod tests {
         let conn = make_conn();
         make_table(&conn, "tbl_a");
         make_table(&conn, "tbl_b");
-        let alteration = ConfigGlobalSchemaAlteration {
+        let alteration = GlobalSchemaAlteration {
             description: None,
             condition: None,
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };
         apply_global_alterations(
             &conn,
-            [alteration].iter(),
+            &[alteration],
             &["tbl_a".to_string(), "tbl_b".to_string()],
         );
         for tbl in &["tbl_a", "tbl_b"] {
@@ -259,13 +259,13 @@ mod tests {
     fn alteration_with_no_dependencies_always_runs() {
         let conn = make_conn();
         make_table(&conn, "my_table");
-        let alteration = ConfigSchemaAlteration {
+        let alteration = SchemaAlteration {
             description: None,
             dependencies: vec![],
             condition: None,
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&conn, [alteration].iter());
+        apply_alterations(&conn, &[alteration]);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM information_schema.columns
@@ -281,13 +281,13 @@ mod tests {
     fn alteration_skipped_when_one_of_multiple_dependencies_missing() {
         let conn = make_conn();
         make_table(&conn, "tbl_present");
-        let alteration = ConfigSchemaAlteration {
+        let alteration = SchemaAlteration {
             description: None,
             dependencies: vec!["tbl_present".to_string(), "tbl_absent".to_string()],
             condition: None,
             sql: "ALTER TABLE tbl_present ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&conn, [alteration].iter());
+        apply_alterations(&conn, &[alteration]);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM information_schema.columns
@@ -303,12 +303,12 @@ mod tests {
     fn global_alteration_runs_when_condition_true() {
         let conn = make_conn();
         make_table(&conn, "tbl_a");
-        let alteration = ConfigGlobalSchemaAlteration {
+        let alteration = GlobalSchemaAlteration {
             description: None,
             condition: Some("SELECT true".to_string()),
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };
-        apply_global_alterations(&conn, [alteration].iter(), &["tbl_a".to_string()]);
+        apply_global_alterations(&conn, &[alteration], &["tbl_a".to_string()]);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM information_schema.columns
@@ -324,12 +324,12 @@ mod tests {
     fn config_global_alteration_skipped_when_condition_false() {
         let conn = make_conn();
         make_table(&conn, "tbl_a");
-        let alteration = ConfigGlobalSchemaAlteration {
+        let alteration = GlobalSchemaAlteration {
             description: None,
             condition: Some("SELECT false".to_string()),
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };
-        apply_global_alterations(&conn, [alteration].iter(), &["tbl_a".to_string()]);
+        apply_global_alterations(&conn, &[alteration], &["tbl_a".to_string()]);
         let count: i64 = conn
             .query_row(
                 "SELECT count(*) FROM information_schema.columns

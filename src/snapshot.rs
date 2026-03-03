@@ -178,7 +178,7 @@ async fn get_snapshot_bucket(
     Ok((bucket, prefix))
 }
 
-pub async fn download_snapshot_object(
+async fn download_snapshot_object(
     client: aws_sdk_s3::Client,
     bucket: String,
     key: String,
