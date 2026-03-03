@@ -5,6 +5,10 @@
 use aws_smithy_types_convert::stream::PaginationStreamExt;
 use futures::TryStreamExt;
 
+/// Get AWS Organizations account information
+///
+/// # Errors
+/// If any API query fails
 pub async fn fetch_org_accounts() -> anyhow::Result<Vec<(String, Option<String>)>> {
     let config = aws_config::from_env().load().await;
     let client = aws_sdk_organizations::Client::new(&config);

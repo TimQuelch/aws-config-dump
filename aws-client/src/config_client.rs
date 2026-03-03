@@ -48,25 +48,28 @@ const QUERY: &str = concat!(
 );
 
 pub trait ConfigFetchClient {
-    async fn get_resource_counts(&self) -> HashMap<ResourceType, i64>;
-    async fn get_resource_counts_with_select(&self) -> HashMap<ResourceType, i64>;
-    async fn get_resource_configs_with_select(
+    fn get_resource_counts(&self) -> impl Future<Output = HashMap<ResourceType, i64>>;
+    fn get_resource_counts_with_select(&self) -> impl Future<Output = HashMap<ResourceType, i64>>;
+    fn get_resource_configs_with_select(
         &self,
         file_tx: mpsc::Sender<String>,
         cutoff: Option<DateTime<Utc>>,
-    );
-    async fn get_resource_configs_with_batch(
+    ) -> impl Future<Output = ()>;
+    fn get_resource_configs_with_batch(
         &self,
         file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
         cutoff: Option<DateTime<Utc>>,
-    );
-    async fn get_resource_identifiers_with_batch(
+    ) -> impl Future<Output = ()>;
+    fn get_resource_identifiers_with_batch(
         &self,
         file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
-    );
-    async fn get_resource_identifiers_with_select(&self, file_tx: mpsc::Sender<String>);
+    ) -> impl Future<Output = ()>;
+    fn get_resource_identifiers_with_select(
+        &self,
+        file_tx: mpsc::Sender<String>,
+    ) -> impl Future<Output = ()>;
 }
 
 trait ConfigFetcher {

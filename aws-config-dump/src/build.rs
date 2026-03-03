@@ -5,6 +5,10 @@
 use std::{collections::HashSet, time::Duration};
 
 use anyhow::anyhow;
+use aws_client::{
+    config_client::{ConfigFetchClient, DispatchingClient},
+    org_client, snapshot,
+};
 use aws_config::retry::RetryConfig;
 use chrono::{DateTime, Utc};
 use tempfile::TempPath;
@@ -16,11 +20,8 @@ use tokio::{
 use tracing::info;
 
 use crate::config::Config;
-use crate::config_fetch_client::{ConfigFetchClient, DispatchingClient};
 use crate::db;
-use crate::org_client;
 use crate::schema_alterations;
-use crate::snapshot;
 
 pub enum FetchSource {
     Api,

@@ -2,41 +2,15 @@
 #
 # SPDX-License-Identifier: GPL-3.0-only
 
-[package]
-name = "aws-config-dump"
+[workspace]
+resolver = "3"
+members = ["aws-config-dump", "aws-client"]
+
+[workspace.package]
 description = "Get data from AWS Config"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
 
-[lints.clippy]
+[workspace.lints.clippy]
 pedantic = "warn"
-
-[dependencies]
-anyhow = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-config = "1"
-aws-sdk-organizations = "1"
-aws-sdk-s3 = "1"
-aws-sdk-sts = "1"
-aws-smithy-async = "1"
-aws-smithy-types-convert = { version = "0.60", features = [
-  "convert-streams",
-  "convert-chrono",
-] }
-chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4", features = ["derive", "wrap_help"] }
-clap_complete = { version = "4", features = ["unstable-dynamic"] }
-directories = "6"
-duckdb = { version = "1.4", features = ["chrono"] }
-flate2 = "1"
-futures = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tempfile = "3"
-tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
-tokio-util = { version = "0.7", features = ["rt"] }
-toml = "1"
-tracing = "0.1"
-tracing-subscriber = "0.3"

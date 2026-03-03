@@ -13,12 +13,9 @@ mod builtin_alterations;
 mod cli;
 mod completion;
 mod config;
-mod config_fetch_client;
 mod db;
-mod org_client;
 mod query;
 mod schema_alterations;
-mod snapshot;
 mod util;
 
 #[tokio::main()]

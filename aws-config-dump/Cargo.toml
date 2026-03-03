@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Tim Quelch <tim@tquelch.com>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+[package]
+name = "aws-config-dump"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+aws-client = { path = "../aws-client" }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-config = "1"
+aws-sdk-sts = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap_complete = { version = "4", features = ["unstable-dynamic"] }
+directories = "6"
+duckdb = { version = "1.4", features = ["chrono"] }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[lints]
+workspace = true

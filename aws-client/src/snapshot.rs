@@ -16,6 +16,10 @@ use tokio::{
 };
 use tracing::{info, warn};
 
+/// Get the most recent AWS Config snapshots for each account and region
+///
+/// # Errors
+/// If any API call fails, or if tempdir cannot be created
 pub async fn get_snapshots() -> anyhow::Result<TempDir> {
     let config = aws_config::from_env().load().await;
     let config_client = aws_sdk_config::Client::new(&config);
