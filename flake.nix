@@ -7,6 +7,8 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     crane.url = "github:ipetkov/crane";
+    fenix.url = "github:nix-community/fenix";
+    fenix.inputs.nixpkgs.follows = "nixpkgs";
     pre-commit.url = "github:cachix/git-hooks.nix";
     pre-commit.inputs.nixpkgs.follows = "nixpkgs";
     advisory-db.url = "github:rustsec/advisory-db";
@@ -21,6 +23,7 @@
       nixpkgs,
       flake-utils,
       crane,
+      fenix,
       advisory-db,
       pre-commit,
       jailed-claude,
@@ -36,7 +39,7 @@
             (final: prev: { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; })
           ];
         };
-        craneLib = crane.mkLib pkgs;
+        craneLib = (crane.mkLib pkgs).overrideToolchain fenix.packages.${system}.latest.toolchain;
         src = craneLib.cleanCargoSource ./.;
 
         commonArgs = {
