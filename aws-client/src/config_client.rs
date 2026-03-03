@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, error::Error, sync::Arc};
 
+use anyhow::{Result, anyhow};
 use aws_sdk_config::{
     operation::{
         batch_get_aggregate_resource_config::BatchGetAggregateResourceConfigOutput,
@@ -27,6 +28,8 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info, warn};
+
+use crate::sdk_config;
 
 const QUERY: &str = concat!(
     "SELECT ",
@@ -159,27 +162,31 @@ impl Serialize for WrappedResourceIdentifier<'_> {
 }
 
 impl DispatchingClient {
-    pub fn new(
-        client: &aws_sdk_config::Client,
-        aggregator: Option<String>,
-        account_id: impl Into<String>,
-    ) -> Self {
-        Self {
-            fetcher: aggregator.map_or_else(
-                || {
-                    DispatchTarget::Account(AccountFetcher {
-                        client: client.clone(),
-                        account_id: account_id.into(),
-                    })
-                },
-                |aggregator| {
-                    DispatchTarget::Aggregate(AggregateFetcher {
-                        client: client.clone(),
-                        aggregator,
-                    })
-                },
-            ),
-        }
+    /// Returns a dispatching client that uses the named aggregator if provided
+    ///
+    /// # Errors
+    /// If no aggregator is provided, and the API call to retrieve the account id fails
+    pub async fn new(aggregator: Option<String>) -> Result<Self> {
+        let config = &sdk_config::load_config().await;
+        let client = aws_sdk_config::Client::new(config);
+        Ok(Self {
+            fetcher: if let Some(aggregator) = aggregator {
+                DispatchTarget::Aggregate(AggregateFetcher {
+                    client: client.clone(),
+                    aggregator,
+                })
+            } else {
+                DispatchTarget::Account(AccountFetcher {
+                    client: client.clone(),
+                    account_id: aws_sdk_sts::Client::new(config)
+                        .get_caller_identity()
+                        .send()
+                        .await?
+                        .account
+                        .ok_or(anyhow!("failed to get account id from credentials"))?,
+                })
+            },
+        })
     }
 }
 

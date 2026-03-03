@@ -4,7 +4,6 @@
 
 use std::{collections::HashMap, os::unix::process::CommandExt, process::Command};
 
-use aws_sdk_config::types::ResourceType;
 use duckdb::Connection;
 
 use crate::config::Config;
@@ -12,7 +11,7 @@ use crate::util;
 
 enum FieldSelection {
     All,
-    Default(Option<ResourceType>),
+    Default(Option<String>),
     Custom(Vec<String>),
 }
 
@@ -158,11 +157,11 @@ fn column_selection(
 }
 
 fn resource_default_columns(
-    resource_type: &ResourceType,
+    resource_type: &str,
     has_tagname: bool,
     extra_columns: &HashMap<String, Vec<String>>,
 ) -> String {
-    let table_name = util::resource_table_name(resource_type.as_str());
+    let table_name = util::resource_table_name(resource_type);
     let tagname = if has_tagname { ",tagName" } else { "" };
     if let Some(cols) = extra_columns.get(&table_name) {
         return format!(
@@ -171,9 +170,9 @@ fn resource_default_columns(
         );
     }
     let built_in = match resource_type {
-        ResourceType::Role => ",arn",
-        ResourceType::Vpc => ",cidrBlock",
-        ResourceType::Subnet => ",vpcId,cidrBlock,availabilityZone,availableIpAddressCount",
+        "AWS::IAM::Role" => ",arn",
+        "AWS::EC2::VPC" => ",cidrBlock",
+        "AWS::EC2::Subnet" => ",vpcId,cidrBlock,availabilityZone,availableIpAddressCount",
         _ => "",
     };
     format!("{BASE_RESOURCE_DEFAULT_COLUMNS}{tagname}{built_in}")

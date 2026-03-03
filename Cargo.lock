@@ -367,9 +367,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aws-client",
- "aws-config",
- "aws-sdk-config",
- "aws-sdk-sts",
  "chrono",
  "clap",
  "clap_complete",

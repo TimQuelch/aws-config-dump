@@ -12,9 +12,6 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 aws-client = { path = "../aws-client" }
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-config = "1"
-aws-sdk-sts = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = { version = "4", features = ["unstable-dynamic"] }

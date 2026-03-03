@@ -2,14 +2,12 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 
-use anyhow::anyhow;
 use aws_client::{
     config_client::{ConfigFetchClient, DispatchingClient},
     org_client, snapshot,
 };
-use aws_config::retry::RetryConfig;
 use chrono::{DateTime, Utc};
 use tempfile::TempPath;
 use tokio::{
@@ -82,25 +80,7 @@ async fn fetch_resources(
     aggregator: Option<String>,
     cutoff: Option<DateTime<Utc>>,
 ) -> anyhow::Result<(TempPath, TempPath)> {
-    let config = aws_config::from_env()
-        .retry_config(
-            RetryConfig::standard()
-                .with_initial_backoff(Duration::from_millis(50))
-                .with_max_backoff(Duration::from_secs(60))
-                .with_max_attempts(100),
-        )
-        .load()
-        .await;
-    let client = aws_sdk_config::Client::new(&config);
-
-    let account_id = aws_sdk_sts::Client::new(&config)
-        .get_caller_identity()
-        .send()
-        .await?
-        .account
-        .ok_or(anyhow!("could not get caller identity"))?;
-
-    let config_client = DispatchingClient::new(&client, aggregator.clone(), account_id);
+    let config_client = DispatchingClient::new(aggregator.clone()).await?;
 
     let type_counts = config_client.get_resource_counts().await;
     let all_types: HashSet<_> = type_counts.keys().cloned().collect();
