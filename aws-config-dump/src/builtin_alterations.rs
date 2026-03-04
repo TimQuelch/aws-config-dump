@@ -144,13 +144,33 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
 });
 
 pub static GLOBAL_ALTERATIONS: LazyLock<Vec<GlobalSchemaAlteration>> = LazyLock::new(|| {
-    vec![GlobalSchemaAlteration {
-        description: Some("add tagName column from tags['Name']".to_string()),
-        condition: Some(
-            r#"SELECT count(*) > 0 FROM "{table}" WHERE tags['Name'] IS NOT NULL"#.to_string(),
-        ),
-        sql: r#"ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
+    vec![
+        GlobalSchemaAlteration {
+            description: Some("add tagName column from tags['Name']".to_string()),
+            condition: Some(
+                r#"SELECT count(*) > 0 FROM "{table}" WHERE tags['Name'] IS NOT NULL"#.to_string(),
+            ),
+            sql: r#"ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
                UPDATE "{table}" SET tagName = tags['Name'];"#
+                .to_string(),
+        },
+        GlobalSchemaAlteration {
+            description: Some("remove all null columns".to_string()),
+            condition: None,
+            sql: r#"
+            CREATE TEMPORARY MACRO IF NOT EXISTS notnullcols(tablename) AS (
+                FROM (
+                    UNPIVOT (FROM query_table(tablename) SELECT MAX(COLUMNS(*)))
+                    ON COLUMNS(*)::VARCHAR
+                )
+                SELECT list(name)
+            );
+            SET VARIABLE notnullcols = notnullcols('{table}');
+            CREATE OR REPLACE TABLE "{table}" AS
+                FROM "{table}" SELECT columns(
+                    lambda c: list_contains(getvariable('notnullcols'), c)
+                );"#
             .to_string(),
-    }]
+        },
+    ]
 });
