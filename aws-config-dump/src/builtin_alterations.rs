@@ -140,6 +140,33 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
             ALTER TABLE ssm_patchcompliance DROP COLUMN "AWS:ComplianceItem";"#
                 .to_string(),
         },
+        SchemaAlteration {
+            description: Some("transform sns_topic".to_string()),
+            dependencies: vec!["sns_topic".to_string()],
+            condition: None,
+            sql: r"
+            ALTER TABLE sns_topic ALTER COLUMN Policy TYPE JSON;
+            ALTER TABLE sns_topic DROP COLUMN TopicArn;
+            ALTER TABLE sns_topic DROP COLUMN Tags_1;
+            ALTER TABLE sns_topic ALTER COLUMN EffectiveDeliveryPolicy TYPE STRUCT(
+                http STRUCT(
+                    defaultHealthyRetryPolicy STRUCT(
+                        minDelayTarget INT,
+                        maxDelayTarget INT,
+                        numRetries INT,
+                        numMaxDelayRetries INT,
+                        numNoDelayRetries INT,
+                        numMinDelayRetries INT,
+                        backoffFunction VARCHAR
+                    ),
+                    disableSubscriptionOverrides BOOLEAN,
+                    defaultRequestPolicy STRUCT(
+                        headerContentType VARCHAR
+                    )
+                )
+            );
+            ".to_string(),
+        },
     ]
 });
 
