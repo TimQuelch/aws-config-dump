@@ -258,12 +258,17 @@ pub fn build_derived_tables(
                             accountId,
                             resourceType,
                             resourceId,
-                            nullif(configuration, json('{{}}')) as configuration,
-                            supplementaryConfiguration
+                            CASE WHEN configuration = json('{{}}')
+                                THEN {{configuration: NULL}}::JSON
+                                ELSE configuration
+                            END AS configuration,
+                            CASE WHEN supplementaryConfiguration = json('{{}}')
+                                THEN {{supplementaryConfiguration: NULL}}::JSON
+                                ELSE supplementaryConfiguration
+                            END AS supplementaryConfiguration
                         FROM resources
                         WHERE resourceType = ?
-                    ) TO '{filename}';
-                "
+                    ) TO '{filename}';"
                 )
                 .as_str(),
                 params![&resource_type],
@@ -281,7 +286,7 @@ pub fn build_derived_tables(
                     SELECT
                         r.* EXCLUDE(configuration, supplementaryConfiguration),
                         unnest(j.configuration),
-                        j.supplementaryConfiguration
+                        unnest(j.supplementaryConfiguration)
                     FROM
                         read_json(?) j
                         JOIN resources r USING (accountId, resourceType, resourceId);"
