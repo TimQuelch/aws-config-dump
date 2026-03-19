@@ -103,7 +103,10 @@
               (
                 (jailed-claude.lib.makeJailedClaude {
                   inherit pkgs;
-                  extraReadWritePaths = [ "~/.cargo" ];
+                  extraReadWritePaths = [
+                    "~/.cargo"
+                    "~/.cache/nix"
+                  ];
                   persistHome = true;
                   wrapper = entry: "nix develop .#base -c ${entry}";
                 }).override
