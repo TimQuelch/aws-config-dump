@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::{convert::Into, sync::LazyLock};
 
 use clap::{ArgMatches, CommandFactory};
-use clap_complete::{CompletionCandidate, engine::ValueCandidates};
+use clap_complete::CompletionCandidate;
 use tokio::sync::oneshot;
 use tokio::task;
 
@@ -55,66 +55,35 @@ fn query_results_candidates(query: &str) -> Vec<clap_complete::CompletionCandida
         .collect()
 }
 
-pub struct ResourceTypeCandidates {}
-
-impl ResourceTypeCandidates {
-    pub fn new() -> Self {
-        Self {}
-    }
+pub fn resource_type_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    query_results_candidates("SELECT resourceType FROM resourceTypes;")
 }
 
-impl ValueCandidates for ResourceTypeCandidates {
-    fn candidates(&self) -> Vec<clap_complete::CompletionCandidate> {
-        query_results_candidates("SELECT resourceType FROM resourceTypes;")
-    }
-}
-
-pub struct AccountCandidates {}
-
-impl AccountCandidates {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl ValueCandidates for AccountCandidates {
-    fn candidates(&self) -> Vec<clap_complete::CompletionCandidate> {
-        let mut candidates =
-            query_results_candidates("SELECT accountId, accountName FROM accounts;");
-        let flipped: Vec<_> = candidates
-            .iter()
-            .filter_map(|c| {
-                c.get_help().map(|h| {
-                    CompletionCandidate::new(h.to_string())
-                        .help(Some(c.get_value().to_string_lossy().to_string().into()))
-                })
+pub fn account_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    let mut candidates = query_results_candidates("SELECT accountId, accountName FROM accounts;");
+    let flipped: Vec<_> = candidates
+        .iter()
+        .filter_map(|c| {
+            c.get_help().map(|h| {
+                CompletionCandidate::new(h.to_string())
+                    .help(Some(c.get_value().to_string_lossy().to_string().into()))
             })
-            .collect();
-        candidates.extend(flipped);
-        candidates
-    }
+        })
+        .collect();
+    candidates.extend(flipped);
+    candidates
 }
 
-pub struct FieldCandidates {}
+pub fn field_candidates() -> Vec<clap_complete::CompletionCandidate> {
+    let table = PARSED_ARGS
+        .subcommand_matches("query")
+        .and_then(|x| x.get_one::<String>("resource_type"))
+        .map_or_else(|| "resources".to_string(), util::resource_table_name);
 
-impl FieldCandidates {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl ValueCandidates for FieldCandidates {
-    fn candidates(&self) -> Vec<clap_complete::CompletionCandidate> {
-        let table = PARSED_ARGS
-            .subcommand_matches("query")
-            .and_then(|x| x.get_one::<String>("resource_type"))
-            .map_or_else(|| "resources".to_string(), util::resource_table_name);
-
-        query_results_candidates(
+    query_results_candidates(
             format!(
                 "FROM information_schema.columns SELECT column_name, data_type WHERE table_name = '{table}';"
             )
             .as_str(),
         )
-    }
 }

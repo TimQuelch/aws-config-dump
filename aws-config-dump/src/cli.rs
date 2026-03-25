@@ -51,13 +51,13 @@ pub enum Command {
     /// Query the offline database
     Query {
         /// Filter on resource type
-        #[arg(short, long, add = ArgValueCandidates::new(completion::ResourceTypeCandidates::new()))]
+        #[arg(short, long, add = ArgValueCandidates::new(completion::resource_type_candidates))]
         resource_type: Option<String>,
         /// Filter on account
-        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::AccountCandidates::new()))]
+        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::account_candidates))]
         accounts: Option<Vec<String>>,
         /// Select fields
-        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::FieldCandidates::new()))]
+        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
         fields: Option<Vec<String>>,
         /// Include all fields
         #[arg(short = 'F', long)]
