@@ -87,3 +87,29 @@ pub fn field_candidates() -> Vec<clap_complete::CompletionCandidate> {
             .as_str(),
         )
 }
+
+pub fn where_clause_completer(
+    current: &std::ffi::OsStr,
+) -> Vec<clap_complete::CompletionCandidate> {
+    let table = PARSED_ARGS
+        .subcommand_matches("query")
+        .and_then(|x| x.get_one::<String>("resource_type"))
+        .map_or_else(|| "resources".to_string(), util::resource_table_name);
+
+    if let Some((key, prefix)) = current.to_string_lossy().split_once('=') {
+        let key_prefix = format!("{key}=");
+        query_results_candidates(
+            format!(r#"FROM query_table('{table}') SELECT DISTINCT "{key}" WHERE "{key}" LIKE '{prefix}%';"#).as_str(),
+        )
+        .into_iter()
+        .map(|c| c.add_prefix(&key_prefix))
+        .collect()
+    } else {
+        query_results_candidates(
+            format!(
+                "FROM information_schema.columns SELECT column_name || '=' WHERE table_name = '{table}' AND data_type = 'VARCHAR';"
+            )
+            .as_str(),
+        )
+    }
+}

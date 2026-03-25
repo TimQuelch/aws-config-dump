@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use clap::{Parser, Subcommand};
-use clap_complete::ArgValueCandidates;
+use clap_complete::{ArgValueCandidates, ArgValueCompleter};
 
 use crate::completion;
 
@@ -63,7 +63,7 @@ pub enum Command {
         #[arg(short = 'F', long)]
         all_fields: bool,
         /// Where clause in the form `key=value`
-        #[arg(short, long, num_args(1..), value_parser = parse_where_clause)]
+        #[arg(short, long, num_args(1..), value_parser = parse_where_clause, add = ArgValueCompleter::new(completion::where_clause_completer))]
         r#where: Option<Vec<(String, String)>>,
         /// Where clause in arbitrary format
         #[arg(short = 'W', long, num_args(1..))]
