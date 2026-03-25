@@ -65,6 +65,8 @@ async fn main() -> anyhow::Result<()> {
             accounts,
             fields,
             all_fields,
+            r#where,
+            where_raw,
             query,
         } => query::query(
             &config,
@@ -72,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
             accounts.as_deref(),
             fields,
             all_fields,
+            r#where,
+            where_raw,
             &query,
         ),
     }

@@ -59,11 +59,29 @@ pub enum Command {
         /// Select fields
         #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::FieldCandidates::new()))]
         fields: Option<Vec<String>>,
-        /// all fields
+        /// Include all fields
         #[arg(short = 'F', long)]
         all_fields: bool,
+        /// Where clause in the form `key=value`
+        #[arg(short, long, num_args(1..), value_parser = parse_where_clause)]
+        r#where: Option<Vec<(String, String)>>,
+        /// Where clause in arbitrary format
+        #[arg(short = 'W', long, num_args(1..))]
+        where_raw: Option<Vec<String>>,
         /// Query
         #[arg(short, long, default_value = "SELECT * FROM input")]
         query: String,
     },
+}
+
+fn parse_where_clause(arg: &str) -> Result<(String, String), String> {
+    let Some((k, v)) = arg.split_once('=') else {
+        return Err(format!("where clause '{arg}' does not contain '='"));
+    };
+
+    if k.is_empty() || v.is_empty() {
+        return Err(format!("where clause '{arg}' not in the form 'key=value'"));
+    }
+
+    Ok((k.to_string(), v.to_string()))
 }

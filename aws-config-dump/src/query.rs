@@ -26,6 +26,8 @@ fn build_query(
     accounts: Option<&[String]>,
     fields: Option<Vec<String>>,
     all_fields: bool,
+    where_clauses: Option<Vec<(String, String)>>,
+    where_raw_clauses: Option<Vec<String>>,
     user_query: &str,
     column_options: ColumnOptions,
     extra_columns: &HashMap<String, Vec<String>>,
@@ -48,13 +50,39 @@ fn build_query(
                 .map(|a| format!("'{a}'"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("WHERE accountId IN ({values}) OR accountName IN ({values})")
+            format!("AND accountId IN ({values}) OR accountName IN ({values})")
         });
+    let where_clauses =
+        where_clauses
+            .unwrap_or_default()
+            .iter()
+            .fold(String::new(), |mut acc, (k, v)| {
+                acc.push_str(" AND (\"");
+                acc.push_str(k);
+                acc.push_str("\" = '");
+                acc.push_str(v);
+                acc.push_str("')");
+                acc
+            });
+    let where_raw_clauses =
+        where_raw_clauses
+            .unwrap_or_default()
+            .iter()
+            .fold(String::new(), |mut acc, w| {
+                acc.push_str(" AND (");
+                acc.push_str(w);
+                acc.push(')');
+                acc
+            });
     format!(
-        "CREATE OR REPLACE TEMPORARY VIEW input AS
+        "WITH input AS (
             SELECT {columns} FROM query_table('{table}')
             LEFT JOIN accounts USING (accountId)
-            {account_clause};
+            WHERE true
+            {account_clause}
+            {where_clauses}
+            {where_raw_clauses}
+        )
         {user_query};",
     )
 }
@@ -89,6 +117,8 @@ pub fn query(
     accounts: Option<&[String]>,
     fields: Option<Vec<String>>,
     all_fields: bool,
+    where_clauses: Option<Vec<(String, String)>>,
+    where_raw_clauses: Option<Vec<String>>,
     query: &str,
 ) -> anyhow::Result<()> {
     let table = resource_type.map_or_else(|| "resources".to_string(), util::resource_table_name);
@@ -105,6 +135,8 @@ pub fn query(
         accounts,
         fields,
         all_fields,
+        where_clauses,
+        where_raw_clauses,
         query,
         ColumnOptions {
             has_account_name,
@@ -191,6 +223,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -205,6 +239,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -219,6 +255,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -233,13 +271,13 @@ mod tests {
             Some(&["123456789012".to_string()]),
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
         );
-        assert!(
-            q.contains("WHERE accountId IN ('123456789012') OR accountName IN ('123456789012')")
-        );
+        assert!(q.contains("accountId IN ('123456789012') OR accountName IN ('123456789012')"));
     }
 
     #[test]
@@ -249,41 +287,15 @@ mod tests {
             Some(&["123456789012".to_string(), "prod".to_string()]),
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
         );
         assert!(q.contains(
-            "WHERE accountId IN ('123456789012', 'prod') OR accountName IN ('123456789012', 'prod')"
+            "accountId IN ('123456789012', 'prod') OR accountName IN ('123456789012', 'prod')"
         ));
-    }
-
-    #[test]
-    fn no_account_filter_no_where_clause() {
-        let q = build_query(
-            None,
-            None,
-            None,
-            false,
-            "SELECT * FROM input",
-            ColumnOptions::default(),
-            &HashMap::new(),
-        );
-        assert!(!q.contains("WHERE"));
-    }
-
-    #[test]
-    fn empty_account_filter_no_where_clause() {
-        let q = build_query(
-            None,
-            Some(&[]),
-            None,
-            false,
-            "SELECT * FROM input",
-            ColumnOptions::default(),
-            &HashMap::new(),
-        );
-        assert!(!q.contains("WHERE"));
     }
 
     #[test]
@@ -293,6 +305,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT count(*) FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -307,6 +321,8 @@ mod tests {
             None,
             None,
             true,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -321,6 +337,8 @@ mod tests {
             None,
             None,
             true,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions {
                 has_account_name: true,
@@ -333,6 +351,8 @@ mod tests {
             None,
             None,
             true,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -348,6 +368,8 @@ mod tests {
             None,
             Some(fields),
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -363,6 +385,8 @@ mod tests {
             None,
             Some(fields),
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -378,6 +402,8 @@ mod tests {
             None,
             Some(fields.clone()),
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions {
                 has_account_name: true,
@@ -390,6 +416,8 @@ mod tests {
             None,
             Some(fields),
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -404,6 +432,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -418,6 +448,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions {
                 has_account_name: true,
@@ -437,6 +469,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -453,6 +487,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions {
                 has_account_name: true,
@@ -470,6 +506,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -484,6 +522,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions {
                 has_account_name: true,
@@ -501,6 +541,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -517,6 +559,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
@@ -533,14 +577,14 @@ mod tests {
             Some(&["123456789012".to_string()]),
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &HashMap::new(),
         );
         assert!(q.contains("query_table('ec2_instance')"));
-        assert!(
-            q.contains("WHERE accountId IN ('123456789012') OR accountName IN ('123456789012')")
-        );
+        assert!(q.contains("accountId IN ('123456789012') OR accountName IN ('123456789012')"));
     }
 
     #[test]
@@ -554,6 +598,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &extra,
@@ -571,6 +617,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &extra,
@@ -588,6 +636,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions::default(),
             &extra,
@@ -602,6 +652,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions {
                 has_tagname: true,
@@ -625,6 +677,8 @@ mod tests {
             None,
             None,
             false,
+            None,
+            None,
             "SELECT * FROM input",
             ColumnOptions {
                 has_tagname: true,
