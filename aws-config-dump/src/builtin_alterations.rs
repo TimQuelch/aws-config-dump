@@ -167,6 +167,15 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
             );
             ".to_string(),
         },
+        SchemaAlteration {
+            description: Some("parse organizations_policy json content".to_string()),
+            dependencies: vec!["organizations_policy".to_string()],
+            condition: None,
+            sql: r"
+            ALTER TABLE organizations_policy ALTER COLUMN Content TYPE JSON;
+            ALTER TABLE organizations_policy DROP COLUMN Arn_1;
+            ".to_string(),
+        },
     ]
 });
 

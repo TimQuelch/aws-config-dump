@@ -159,6 +159,15 @@ pub fn build_resources_table(
     info!(new = get_count("INSERT"), "inserted new resources");
     info!(updated = get_count("UPDATE"), "updated existing resources");
     info!(removed = get_count("DELETE"), "removed deleted resources");
+
+    info!("Fixing 'AWS::Organizations::Policy' values");
+    db_conn.execute_batch(r"
+        UPDATE resources
+            SET configuration = json_merge_patch(configuration, json_object('Content', configuration->>'Content'))
+            WHERE resourceType = 'AWS::Organizations::Policy'
+            AND json_type(configuration->'Content') = 'OBJECT';
+    ")?;
+
     Ok(())
 }
 
