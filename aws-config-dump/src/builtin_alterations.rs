@@ -177,9 +177,12 @@ pub static GLOBAL_ALTERATIONS: LazyLock<Vec<GlobalSchemaAlteration>> = LazyLock:
             condition: Some(
                 r#"SELECT count(*) > 0 FROM "{table}" WHERE tags['Name'] IS NOT NULL"#.to_string(),
             ),
-            sql: r#"ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
-               UPDATE "{table}" SET tagName = tags['Name'];"#
-                .to_string(),
+            sql: r#"
+            ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
+            UPDATE "{table}" SET tagName = tags['Name'];
+            UPDATE "{table}" SET resourceName = coalesce(resourceName, tagName);
+            "#
+            .to_string(),
         },
         GlobalSchemaAlteration {
             description: Some("remove all null columns".to_string()),
