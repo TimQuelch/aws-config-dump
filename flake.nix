@@ -100,18 +100,18 @@
           # recursive calls
           default = self.devShells.${system}.base.overrideAttrs (prevAttrs: {
             nativeBuildInputs = prevAttrs.nativeBuildInputs ++ [
-              (
-                (jailed-claude.lib.makeJailedClaude {
-                  inherit pkgs;
-                  extraReadWritePaths = [
-                    "~/.cargo"
-                    "~/.cache/nix"
-                  ];
-                  persistHome = true;
-                  wrapper = entry: "nix develop .#base -c ${entry}";
-                }).override
-                { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; }
-              )
+              # (
+              #   (jailed-claude.lib.makeJailedClaude {
+              #     inherit pkgs;
+              #     extraReadWritePaths = [
+              #       "~/.cargo"
+              #       "~/.cache/nix"
+              #     ];
+              #     persistHome = true;
+              #     wrapper = entry: "nix develop .#base -c ${entry}";
+              #   }).override
+              #   { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; }
+              # )
             ];
           });
           base = craneLib.devShell {
