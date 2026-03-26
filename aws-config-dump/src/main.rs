@@ -68,15 +68,18 @@ async fn main() -> anyhow::Result<()> {
             r#where,
             where_raw,
             query,
-        } => query::query(
-            &config,
-            resource_type.as_deref(),
-            accounts.as_deref(),
-            fields,
-            all_fields,
-            r#where,
-            where_raw,
-            &query,
-        ),
+        } => {
+            query::query(
+                &config,
+                resource_type.as_deref(),
+                accounts.as_deref(),
+                fields,
+                all_fields,
+                r#where,
+                where_raw,
+                &query,
+            )
+            .await
+        }
     }
 }

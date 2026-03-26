@@ -38,19 +38,19 @@ pub async fn build_database(
         db::delete_db(&config.db_path).await?;
     }
 
-    let db_conn = db::connect_to_db(&config.db_path)?;
+    let db_pool = db::connect_to_db(&config.db_path).await?;
 
     match fetch_source {
         FetchSource::Snapshots => {
             let mut dir = snapshot::get_snapshots().await?;
             dir.disable_cleanup(true);
-            db::build_resources_table_from_snapshots(&db_conn, &dir)?;
+            db::build_resources_table_from_snapshots(&db_pool, &dir).await?;
         }
         FetchSource::Api => {
             let cutoff = if should_rebuild {
                 None
             } else {
-                db::get_timestamp_cutoff(&db_conn)?
+                db::get_timestamp_cutoff(&db_pool).await?
             };
 
             if let Some(cutoff_timestamp) = cutoff {
@@ -60,7 +60,7 @@ pub async fn build_database(
             }
 
             let (resources_path, identifiers_path) = fetch_resources(aggregator, cutoff).await?;
-            db::build_resources_table(&db_conn, &resources_path, &identifiers_path)?;
+            db::build_resources_table(&db_pool, &resources_path, &identifiers_path).await?;
         }
         FetchSource::Skip => {}
     }
@@ -71,8 +71,8 @@ pub async fn build_database(
         None
     };
 
-    db::build_derived_tables(&db_conn, org_accounts)?;
-    schema_alterations::apply_schema_alterations(config, &db_conn);
+    db::build_derived_tables(&db_pool, org_accounts).await?;
+    schema_alterations::apply_schema_alterations(config, &db_pool).await?;
     Ok(())
 }
 

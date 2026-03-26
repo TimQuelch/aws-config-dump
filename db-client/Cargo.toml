@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 Tim Quelch <tim@tquelch.com>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+[package]
+name = "db-client"
+description.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+bb8 = { version = "0.9.1", default-features = false }
+chrono = { version = "0.4", features = ["serde"] }
+duckdb = { version = "1.4", features = ["chrono"] }
+tokio = { version = "1", features = ["full"] }
+
+[lints]
+workspace = true

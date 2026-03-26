@@ -35,7 +35,7 @@ impl DbConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct SchemaAlteration {
     pub description: Option<String>,
     #[serde(default)]
@@ -44,7 +44,7 @@ pub struct SchemaAlteration {
     pub sql: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct GlobalSchemaAlteration {
     pub description: Option<String>,
     pub condition: Option<String>,

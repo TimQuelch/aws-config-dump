@@ -4,9 +4,8 @@
 
 use std::{collections::HashMap, os::unix::process::CommandExt, process::Command};
 
-use duckdb::Connection;
-
 use crate::config::Config;
+use crate::db;
 use crate::util;
 
 enum FieldSelection {
@@ -21,6 +20,7 @@ struct ColumnOptions {
     has_tagname: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_query(
     resource_type: Option<&str>,
     accounts: Option<&[String]>,
@@ -87,31 +87,37 @@ fn build_query(
     )
 }
 
-fn has_account_names(db_conn: &Connection) -> bool {
-    db_conn
-        .query_row(
+async fn has_account_names(conn: &db_client::Connection) -> bool {
+    conn.with_conn(|c| {
+        c.query_row(
             "SELECT count(*) > 0 FROM accounts WHERE accountName IS NOT NULL;",
             [],
             |row| row.get(0),
         )
-        .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
-fn table_has_tagname(db_conn: &Connection, table: &str) -> bool {
-    db_conn
-        .query_row(
+async fn table_has_tagname(conn: &db_client::Connection, table: &str) -> bool {
+    let table = table.to_owned();
+    conn.with_conn(move |c| {
+        c.query_row(
             "SELECT count(*) > 0 FROM information_schema.columns
              WHERE table_name = ? AND column_name = 'tagName';",
             [table],
             |row| row.get::<_, bool>(0),
         )
-        .unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Query the database
 ///
 /// Calls the duckdb CLI instead of using the SDK so we don't need to implement TSV formatting here
-pub fn query(
+#[allow(clippy::too_many_arguments)]
+pub async fn query(
     config: &Config,
     resource_type: Option<&str>,
     accounts: Option<&[String]>,
@@ -122,11 +128,16 @@ pub fn query(
     query: &str,
 ) -> anyhow::Result<()> {
     let table = resource_type.map_or_else(|| "resources".to_string(), util::resource_table_name);
-    let (has_account_name, has_tagname) = if let Ok(db_conn) = Connection::open(&config.db_path) {
-        (
-            has_account_names(&db_conn),
-            table_has_tagname(&db_conn, &table),
-        )
+    let (has_account_name, has_tagname) = if let Ok(pool) = db::connect_to_db(&config.db_path).await
+    {
+        if let Ok(conn) = pool.get().await {
+            (
+                has_account_names(&conn).await,
+                table_has_tagname(&conn, &table).await,
+            )
+        } else {
+            (false, false)
+        }
     } else {
         (false, false)
     };

@@ -12,11 +12,14 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 aws-client = { path = "../aws-client" }
+bb8 = { version = "0.9", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = { version = "4", features = ["unstable-dynamic"] }
+db-client = { path = "../db-client" }
 directories = "6"
 duckdb = { version = "1.4", features = ["chrono"] }
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }

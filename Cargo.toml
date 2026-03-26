@@ -4,7 +4,7 @@
 
 [workspace]
 resolver = "3"
-members = ["aws-config-dump", "aws-client"]
+members = ["aws-config-dump", "aws-client", "db-client"]
 
 [workspace.package]
 description = "Get data from AWS Config"
