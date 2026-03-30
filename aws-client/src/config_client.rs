@@ -53,6 +53,10 @@ const QUERY: &str = concat!(
 pub trait ConfigFetchClient {
     fn get_resource_counts(&self) -> impl Future<Output = HashMap<ResourceType, i64>>;
     fn get_resource_counts_with_select(&self) -> impl Future<Output = HashMap<ResourceType, i64>>;
+    fn get_resource_counts_modified_since_cutoff(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> impl Future<Output = HashMap<ResourceType, i64>>;
     fn get_resource_configs_with_select(
         &self,
         file_tx: mpsc::Sender<String>,
@@ -204,6 +208,8 @@ impl ConfigFetchClient for DispatchingClient {
 
     dispatch!(get_resource_counts_with_select() -> HashMap<ResourceType, i64>);
 
+    dispatch!(get_resource_counts_modified_since_cutoff(cutoff: DateTime<Utc>) -> HashMap<ResourceType, i64>);
+
     dispatch!(
         get_resource_configs_with_select(
             file_tx: mpsc::Sender<String>,
@@ -239,6 +245,24 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
 
     async fn get_resource_counts_with_select(&self) -> HashMap<ResourceType, i64> {
         let query = "SELECT resourceType, COUNT(*) GROUP BY resourceType;".to_string();
+
+        select_config_stream(self, query)
+            .map(|row| {
+                let parsed: ResourceCountWithSelectResultRow = serde_json::from_str(&row).unwrap();
+                (parsed.resource_type.into(), parsed.count)
+            })
+            .collect()
+            .await
+    }
+
+    async fn get_resource_counts_modified_since_cutoff(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> HashMap<ResourceType, i64> {
+        let query = format!(
+            "SELECT resourceType, COUNT(*) WHERE configurationItemCaptureTime > '{}' GROUP BY resourceType;",
+            cutoff.to_rfc3339()
+        );
 
         select_config_stream(self, query)
             .map(|row| {

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use aws_client::{
     config_client::{ConfigFetchClient, DispatchingClient},
@@ -88,6 +88,16 @@ async fn fetch_resources(
     let selectable_type_counts = config_client.get_resource_counts_with_select().await;
     let selectable_types: HashSet<_> = selectable_type_counts.keys().cloned().collect();
     let unselectable_types: HashSet<_> = all_types.difference(&selectable_types).cloned().collect();
+
+    let modified_counts = if let Some(cutoff) = cutoff {
+        config_client
+            .get_resource_counts_modified_since_cutoff(cutoff)
+            .await
+    } else {
+        HashMap::new()
+    };
+
+    info!(?modified_counts, "modified counts");
 
     let (resources_tx, resources_handle) = temp_file_writer();
     let (identifiers_tx, identifiers_handle) = temp_file_writer();
