@@ -9,6 +9,7 @@ use aws_client::{
     org_client, snapshot,
 };
 use chrono::{DateTime, Utc};
+use indicatif::MultiProgress;
 use tempfile::TempPath;
 use tokio::{
     io::AsyncWriteExt,
@@ -17,9 +18,9 @@ use tokio::{
 };
 use tracing::info;
 
-use crate::config::Config;
 use crate::db;
 use crate::schema_alterations;
+use crate::{config::Config, util};
 
 pub enum FetchSource {
     Api,
@@ -37,6 +38,8 @@ pub async fn build_database(
     if should_rebuild {
         db::delete_db(&config.db_path).await?;
     }
+
+    let progress = MultiProgress::new();
 
     let db_pool = db::connect_to_db(&config.db_path).await?;
 
@@ -59,7 +62,8 @@ pub async fn build_database(
                 info!("fetching all resources");
             }
 
-            let (resources_path, identifiers_path) = fetch_resources(aggregator, cutoff).await?;
+            let (resources_path, identifiers_path) =
+                fetch_resources(aggregator, cutoff, progress.clone()).await?;
             db::build_resources_table(&db_pool, &resources_path, &identifiers_path).await?;
         }
         FetchSource::Skip => {}
@@ -71,14 +75,15 @@ pub async fn build_database(
         None
     };
 
-    db::build_derived_tables(&db_pool, org_accounts).await?;
-    schema_alterations::apply_schema_alterations(config, &db_pool).await?;
+    db::build_derived_tables(&db_pool, org_accounts, progress.clone()).await?;
+    schema_alterations::apply_schema_alterations(config, &db_pool, progress).await?;
     Ok(())
 }
 
 async fn fetch_resources(
     aggregator: Option<String>,
     cutoff: Option<DateTime<Utc>>,
+    progress: MultiProgress,
 ) -> anyhow::Result<(TempPath, TempPath)> {
     let config_client = DispatchingClient::new(aggregator.clone()).await?;
 
@@ -106,8 +111,18 @@ async fn fetch_resources(
     {
         let c = config_client.clone();
         let resources_tx = resources_tx.clone();
+        let bar = progress.add(util::progress_bar(
+            "fetching modified resources",
+            if cutoff.is_some() {
+                selectable_type_counts.values().sum::<i64>()
+            } else {
+                type_counts.values().sum()
+            }
+            .try_into()
+            .unwrap(),
+        ));
         task::spawn(async move {
-            c.get_resource_configs_with_select(resources_tx, cutoff)
+            c.get_resource_configs_with_select(resources_tx, cutoff, bar)
                 .await;
         });
     }
@@ -116,8 +131,12 @@ async fn fetch_resources(
     {
         let c = config_client.clone();
         let identifiers_tx = identifiers_tx.clone();
+        let bar = progress.add(util::progress_bar(
+            "fetching resource identifers",
+            type_counts.values().sum::<i64>().try_into().unwrap(),
+        ));
         task::spawn(async move {
-            c.get_resource_identifiers_with_select(identifiers_tx.clone())
+            c.get_resource_identifiers_with_select(identifiers_tx.clone(), bar)
                 .await;
         });
     }
@@ -126,12 +145,19 @@ async fn fetch_resources(
 
     {
         let c = config_client.clone();
+        let bar = progress.add(util::progress_bar(
+            "fetching remaining resources",
+            (type_counts.values().sum::<i64>() - selectable_type_counts.values().sum::<i64>())
+                .try_into()
+                .unwrap(),
+        ));
         task::spawn(async move {
             c.get_resource_configs_and_identifiers_with_batch(
                 resources_tx,
                 identifiers_tx,
                 unselectable_types.iter().cloned(),
                 cutoff,
+                bar,
             )
             .await;
         });

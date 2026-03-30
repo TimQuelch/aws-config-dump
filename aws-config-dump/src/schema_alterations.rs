@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use futures::{StreamExt, stream};
+use indicatif::{MultiProgress, ProgressBar};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info};
@@ -18,9 +19,8 @@ use db_client::ConnectionPool;
 pub async fn apply_schema_alterations(
     config: &Config,
     pool: &ConnectionPool,
+    progress: MultiProgress,
 ) -> anyhow::Result<()> {
-    apply_alterations(pool, config.alterations()).await?;
-
     let table_names: Vec<String> = match pool
         .get()
         .await?
@@ -42,7 +42,15 @@ pub async fn apply_schema_alterations(
         Ok(names) => names,
     };
 
-    apply_global_alterations(pool, config.global_alterations(), &table_names).await?;
+    let bar = progress.add(util::progress_bar(
+        "applying schema alterations",
+        (config.alterations_count() + table_names.len() * config.global_alterations_count())
+            .try_into()
+            .unwrap(),
+    ));
+
+    apply_alterations(pool, config.alterations(), bar.clone()).await?;
+    apply_global_alterations(pool, config.global_alterations(), &table_names, bar).await?;
 
     Ok(())
 }
@@ -50,6 +58,7 @@ pub async fn apply_schema_alterations(
 async fn apply_alterations<'a>(
     pool: &ConnectionPool,
     alterations: impl IntoIterator<Item = &'a SchemaAlteration>,
+    bar: ProgressBar,
 ) -> anyhow::Result<()> {
     let names: Vec<String> = pool
         .get()
@@ -82,6 +91,7 @@ async fn apply_alterations<'a>(
 
         if dep_locks.len() == alteration.dependencies.len() {
             let db = pool.get_owned().await?;
+            let bar = bar.clone();
             tasks.spawn(async move {
                 let _guards: Vec<_> = stream::iter(dep_locks)
                     .then(async |m| m.lock_owned().await)
@@ -107,10 +117,12 @@ async fn apply_alterations<'a>(
                                 %err,
                                 "failed to evaluate condition for schema alteration"
                             );
+                            bar.dec_length(1);
                             return;
                         }
                         Ok(false) => {
                             debug!(description, "skipping schema alteration: condition not met");
+                            bar.dec_length(1);
                             return;
                         }
                         Ok(true) => {}
@@ -128,7 +140,10 @@ async fn apply_alterations<'a>(
                         "failed to apply schema alteration"
                     ),
                 }
+                bar.inc(1);
             });
+        } else {
+            bar.dec_length(1);
         }
     }
 
@@ -144,6 +159,7 @@ async fn apply_global_alterations<'a>(
     pool: &ConnectionPool,
     alterations: impl IntoIterator<Item = &'a GlobalSchemaAlteration>,
     table_names: &[String],
+    bar: ProgressBar,
 ) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     for alteration in alterations {
@@ -166,6 +182,7 @@ async fn apply_global_alterations<'a>(
                             %err,
                             "failed to evaluate condition for global schema alteration"
                         );
+                        bar.dec_length(1);
                         continue;
                     }
                     Ok(false) => {
@@ -174,6 +191,7 @@ async fn apply_global_alterations<'a>(
                             description = desc_owned.as_str(),
                             "skipping global schema alteration: condition not met"
                         );
+                        bar.dec_length(1);
                         continue;
                     }
                     Ok(true) => {}
@@ -196,6 +214,7 @@ async fn apply_global_alterations<'a>(
                     "failed to apply global schema alteration"
                 ),
             }
+            bar.inc(1);
         }
     }
     Ok(())
@@ -213,6 +232,10 @@ mod tests {
 
     async fn make_pool() -> ConnectionPool {
         db::connect_to_db_in_memory().await.unwrap()
+    }
+
+    fn make_bar() -> ProgressBar {
+        ProgressBar::hidden()
     }
 
     async fn make_table(pool: &ConnectionPool, name: impl ToString) {
@@ -236,7 +259,9 @@ mod tests {
             condition: None,
             sql: "ALTER TABLE nonexistent_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&pool, &[alteration]).await.unwrap();
+        apply_alterations(&pool, &[alteration], make_bar())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -249,7 +274,9 @@ mod tests {
             condition: None,
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&pool, &[alteration]).await.unwrap();
+        apply_alterations(&pool, &[alteration], make_bar())
+            .await
+            .unwrap();
         let count: i64 = pool
             .get()
             .await
@@ -278,7 +305,9 @@ mod tests {
             condition: Some("SELECT false".to_string()),
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&pool, &[alteration]).await.unwrap();
+        apply_alterations(&pool, &[alteration], make_bar())
+            .await
+            .unwrap();
         let count: i64 = conn
             .with_conn(|c| {
                 c.query_row(
@@ -304,7 +333,9 @@ mod tests {
             condition: Some("SELECT true".to_string()),
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&pool, &[alteration]).await.unwrap();
+        apply_alterations(&pool, &[alteration], make_bar())
+            .await
+            .unwrap();
         let count: i64 = conn
             .with_conn(|c| {
                 c.query_row(
@@ -334,6 +365,7 @@ mod tests {
             &pool,
             &[alteration],
             &["tbl_a".to_string(), "tbl_b".to_string()],
+            make_bar(),
         )
         .await
         .unwrap();
@@ -367,7 +399,9 @@ mod tests {
             condition: None,
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&pool, &[alteration]).await.unwrap();
+        apply_alterations(&pool, &[alteration], make_bar())
+            .await
+            .unwrap();
         let count: i64 = conn
             .with_conn(|c| {
                 c.query_row(
@@ -393,7 +427,9 @@ mod tests {
             condition: None,
             sql: "ALTER TABLE tbl_present ADD COLUMN foo VARCHAR".to_string(),
         };
-        apply_alterations(&pool, &[alteration]).await.unwrap();
+        apply_alterations(&pool, &[alteration], make_bar())
+            .await
+            .unwrap();
         let count: i64 = conn
             .with_conn(|c| {
                 c.query_row(
@@ -418,7 +454,7 @@ mod tests {
             condition: Some("SELECT true".to_string()),
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };
-        apply_global_alterations(&pool, &[alteration], &["tbl_a".to_string()])
+        apply_global_alterations(&pool, &[alteration], &["tbl_a".to_string()], make_bar())
             .await
             .unwrap();
         let count: i64 = conn
@@ -445,7 +481,7 @@ mod tests {
             condition: Some("SELECT false".to_string()),
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };
-        apply_global_alterations(&pool, &[alteration], &["tbl_a".to_string()])
+        apply_global_alterations(&pool, &[alteration], &["tbl_a".to_string()], make_bar())
             .await
             .unwrap();
         let count: i64 = conn

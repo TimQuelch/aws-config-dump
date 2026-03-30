@@ -8,6 +8,7 @@ use std::path::Path;
 use chrono::{DateTime, Days, Utc};
 use db_client::{ConnectionManager, ConnectionPool};
 use duckdb::params;
+use indicatif::MultiProgress;
 use tempfile::{NamedTempFile, TempDir, TempPath};
 use tokio::task::{self, JoinSet};
 use tracing::{debug, error, info};
@@ -257,6 +258,7 @@ pub async fn build_resources_table_from_snapshots(
 pub async fn build_derived_tables(
     pool: &ConnectionPool,
     org_accounts: Option<Vec<(String, Option<String>)>>,
+    progress: MultiProgress,
 ) -> anyhow::Result<()> {
     let db = pool.get().await?;
     db.with_conn(|c| {
@@ -323,6 +325,11 @@ pub async fn build_derived_tables(
         })
         .await?;
 
+    let bar = progress.add(util::progress_bar(
+        "building derived tables",
+        resource_types.len().try_into().unwrap(),
+    ));
+
     let mut tasks: JoinSet<_> = resource_types
         .into_iter()
         .map(|rt| build_resource_derived_table(pool.clone(), rt))
@@ -330,6 +337,7 @@ pub async fn build_derived_tables(
 
     while let Some(result) = tasks.join_next().await {
         result??;
+        bar.inc(1);
     }
 
     Ok(())

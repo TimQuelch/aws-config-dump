@@ -21,6 +21,7 @@ use aws_smithy_async::future::pagination_stream::PaginationStream;
 use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
 use chrono::{DateTime, Utc};
 use futures::stream::{self, Stream, StreamExt};
+use indicatif::ProgressBar;
 use serde::{self, Deserialize, Serialize, ser::SerializeStruct};
 use tokio::{
     sync::{Semaphore, mpsc},
@@ -61,6 +62,7 @@ pub trait ConfigFetchClient {
         &self,
         file_tx: mpsc::Sender<String>,
         cutoff: Option<DateTime<Utc>>,
+        progress: ProgressBar,
     ) -> impl Future<Output = ()>;
     fn get_resource_configs_and_identifiers_with_batch(
         &self,
@@ -68,10 +70,12 @@ pub trait ConfigFetchClient {
         identifiers_file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
         cutoff: Option<DateTime<Utc>>,
+        progress: ProgressBar,
     ) -> impl Future<Output = ()>;
     fn get_resource_identifiers_with_select(
         &self,
         file_tx: mpsc::Sender<String>,
+        progress: ProgressBar,
     ) -> impl Future<Output = ()>;
 }
 
@@ -208,25 +212,36 @@ impl ConfigFetchClient for DispatchingClient {
 
     dispatch!(get_resource_counts_with_select() -> HashMap<ResourceType, i64>);
 
-    dispatch!(get_resource_counts_modified_since_cutoff(cutoff: DateTime<Utc>) -> HashMap<ResourceType, i64>);
+    dispatch!(
+        get_resource_counts_modified_since_cutoff(
+            cutoff: DateTime<Utc>
+        ) -> HashMap<ResourceType, i64>
+    );
 
     dispatch!(
         get_resource_configs_with_select(
             file_tx: mpsc::Sender<String>,
-            cutoff: Option<DateTime<Utc>>
+            cutoff: Option<DateTime<Utc>>,
+            progress: ProgressBar
         )
     );
 
     dispatch!(
         get_resource_configs_and_identifiers_with_batch(
-        configs_file_tx: mpsc::Sender<String>,
-        identifiers_file_tx: mpsc::Sender<String>,
+            configs_file_tx: mpsc::Sender<String>,
+            identifiers_file_tx: mpsc::Sender<String>,
             resource_types: impl Iterator<Item = ResourceType>,
-            cutoff: Option<DateTime<Utc>>
+            cutoff: Option<DateTime<Utc>>,
+            progress: ProgressBar
         )
     );
 
-    dispatch!(get_resource_identifiers_with_select(file_tx: mpsc::Sender<String>));
+    dispatch!(
+        get_resource_identifiers_with_select(
+            file_tx: mpsc::Sender<String>,
+            progress: ProgressBar
+        )
+    );
 }
 
 impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
@@ -277,6 +292,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         &self,
         file_tx: mpsc::Sender<String>,
         cutoff: Option<DateTime<Utc>>,
+        progress: ProgressBar,
     ) {
         let query = if let Some(dt) = cutoff {
             format!(
@@ -289,10 +305,11 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
 
         select_config_stream(self, query)
             .for_each(async |resource| {
-                let inner_file_tx = file_tx.clone();
-                task::spawn_blocking(move || {
-                    process_resource_config(&inner_file_tx, resource);
-                });
+                let resource = task::spawn_blocking(move || sanitize_resource_config(resource))
+                    .await
+                    .unwrap();
+                file_tx.send(resource).await.unwrap();
+                progress.inc(1);
             })
             .await;
     }
@@ -303,6 +320,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         identifiers_file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
         cutoff: Option<DateTime<Utc>>,
+        progress: ProgressBar,
     ) {
         // single batch is 100
         let (batch_tx, batch_rx) = mpsc::channel::<C::Identifier>(256);
@@ -315,8 +333,10 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                     .for_each(async |batch| {
                         let file_tx = configs_file_tx.clone();
                         let new_self = new_self.clone();
+                        let progress = progress.clone();
                         tokio::spawn(async move {
-                            info!(batch_length = batch.len(), "getting batch of resources");
+                            let batch_length = batch.len();
+                            info!(batch_length, "getting batch of resources");
 
                             let response = new_self.batch_get_resources_call(batch).await.unwrap();
 
@@ -337,6 +357,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                                     file_tx.send(json.to_string()).await.unwrap();
                                 }
                             }
+                            progress.inc(batch_length.try_into().unwrap());
                         });
                     })
                     .await;
@@ -373,13 +394,18 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         });
     }
 
-    async fn get_resource_identifiers_with_select(&self, file_tx: mpsc::Sender<String>) {
+    async fn get_resource_identifiers_with_select(
+        &self,
+        file_tx: mpsc::Sender<String>,
+        progress: ProgressBar,
+    ) {
         select_config_stream(
             self,
             "SELECT resourceType, accountId, resourceId;".to_string(),
         )
         .for_each(async |resource| {
             file_tx.send(resource).await.unwrap();
+            progress.inc(1);
         })
         .await;
     }
@@ -589,12 +615,6 @@ fn sanitize_resource_config(mut resource: String) -> String {
         resource = value.to_string();
     }
     resource
-}
-
-fn process_resource_config(file_sender: &mpsc::Sender<String>, resource: String) {
-    file_sender
-        .blocking_send(sanitize_resource_config(resource))
-        .unwrap();
 }
 
 fn item_to_json(item: BaseConfigurationItem) -> serde_json::Value {

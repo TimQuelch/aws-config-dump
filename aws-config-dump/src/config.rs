@@ -160,10 +160,18 @@ impl Config {
             .chain(&self.schema_alterations)
     }
 
+    pub fn alterations_count(&self) -> usize {
+        builtin_alterations::ALTERATIONS.len() + self.schema_alterations.len()
+    }
+
     pub fn global_alterations(&self) -> impl IntoIterator<Item = &GlobalSchemaAlteration> {
         builtin_alterations::GLOBAL_ALTERATIONS
             .iter()
             .chain(&self.global_schema_alterations)
+    }
+
+    pub fn global_alterations_count(&self) -> usize {
+        builtin_alterations::GLOBAL_ALTERATIONS.len() + self.global_schema_alterations.len()
     }
 }
 

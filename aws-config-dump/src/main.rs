@@ -7,6 +7,7 @@ use clap_complete::CompleteEnv;
 
 use cli::{Cli, Command};
 use config::{Config, ConfigFile};
+use tracing::Level;
 
 mod build;
 mod builtin_alterations;
@@ -24,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
 
     let subscriber = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_max_level(Level::WARN)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
