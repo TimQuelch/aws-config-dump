@@ -101,7 +101,9 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
                     CompliantMediumCount INT,
                     CompliantLowCount INT,
                     CompliantInformationalCount INT,
-                    CompliantUnspecifiedCount INT
+                    CompliantUnspecifiedCount INT,
+                    ExecutionType VARCHAR,
+                    ComplianceType VARCHAR
                 );
                 UPDATE ssm_patchcompliance SET complianceSummary = "AWS:ComplianceItem".Content.Patch['ComplianceSummary'];
 
@@ -123,14 +125,35 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
                 );
                 UPDATE ssm_patchcompliance SET patches = map_from_entries(
                     list_transform(
-                        list_filter(
-                            map_entries("AWS:ComplianceItem".Content.Patch),
-                            lambda kv: kv.key != 'ComplianceSummary'
+                        list_transform(
+                            list_filter(
+                                map_entries("AWS:ComplianceItem".Content.Patch),
+                                lambda kv: kv.key != 'ComplianceSummary'
+                            ),
+                            lambda kv: struct_update(
+                                kv,
+                                value := json_transform(
+                                    kv.value::JSON,
+                                    struct_pack(
+                                        Id := 'VARCHAR',
+                                        Title := 'VARCHAR',
+                                        Status := 'VARCHAR',
+                                        InstalledTime := 'TIMESTAMPTZ',
+                                        Severity := 'VARCHAR',
+                                        PatchSeverity := 'VARCHAR',
+                                        Classification := 'VARCHAR',
+                                        PatchState := 'VARCHAR',
+                                        PatchBaselineId := 'VARCHAR',
+                                        PatchGroup := 'VARCHAR',
+                                        CVEIds := 'VARCHAR'
+                                    )::JSON
+                                )
+                            )
                         ),
-                        lambda kv: struct_update(kv, value := struct_update(kv.value,
+                        lambda kv: struct_update(kv, value := struct_update(
+                            kv.value,
                             Title := nullif(kv.value.Title, ''),
                             Status := nullif(kv.value.Status, ''),
-                            InstalledTime := nullif(kv.value.InstalledTime, ''),
                             PatchSeverity := nullif(kv.value.PatchSeverity, ''),
                             Classification := nullif(kv.value.Classification, ''),
                             PatchGroup := nullif(kv.value.PatchGroup, ''),
