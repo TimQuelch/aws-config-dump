@@ -58,16 +58,12 @@ pub trait ConfigFetchClient {
         file_tx: mpsc::Sender<String>,
         cutoff: Option<DateTime<Utc>>,
     ) -> impl Future<Output = ()>;
-    fn get_resource_configs_with_batch(
+    fn get_resource_configs_and_identifiers_with_batch(
         &self,
-        file_tx: mpsc::Sender<String>,
+        configs_file_tx: mpsc::Sender<String>,
+        identifiers_file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
         cutoff: Option<DateTime<Utc>>,
-    ) -> impl Future<Output = ()>;
-    fn get_resource_identifiers_with_batch(
-        &self,
-        file_tx: mpsc::Sender<String>,
-        resource_types: impl Iterator<Item = ResourceType>,
     ) -> impl Future<Output = ()>;
     fn get_resource_identifiers_with_select(
         &self,
@@ -76,7 +72,7 @@ pub trait ConfigFetchClient {
 }
 
 trait ConfigFetcher {
-    type Identifier: Send;
+    type Identifier: Send + Clone;
 
     fn get_discovered_resource_counts_call(
         &self,
@@ -105,10 +101,12 @@ trait BatchResponse {
     fn into_items(self) -> Vec<BaseConfigurationItem>;
 }
 
+#[derive(Clone)]
 pub struct DispatchingClient {
     fetcher: DispatchTarget,
 }
 
+#[derive(Clone)]
 enum DispatchTarget {
     Account(AccountFetcher),
     Aggregate(AggregateFetcher),
@@ -214,17 +212,11 @@ impl ConfigFetchClient for DispatchingClient {
     );
 
     dispatch!(
-        get_resource_configs_with_batch(
-            file_tx: mpsc::Sender<String>,
+        get_resource_configs_and_identifiers_with_batch(
+        configs_file_tx: mpsc::Sender<String>,
+        identifiers_file_tx: mpsc::Sender<String>,
             resource_types: impl Iterator<Item = ResourceType>,
             cutoff: Option<DateTime<Utc>>
-        )
-    );
-
-    dispatch!(
-        get_resource_identifiers_with_batch(
-            file_tx: mpsc::Sender<String>,
-            resource_types: impl Iterator<Item = ResourceType>
         )
     );
 
@@ -281,9 +273,10 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             .await;
     }
 
-    async fn get_resource_configs_with_batch(
+    async fn get_resource_configs_and_identifiers_with_batch(
         &self,
-        file_tx: mpsc::Sender<String>,
+        configs_file_tx: mpsc::Sender<String>,
+        identifiers_file_tx: mpsc::Sender<String>,
         resource_types: impl Iterator<Item = ResourceType>,
         cutoff: Option<DateTime<Utc>>,
     ) {
@@ -296,7 +289,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                 ReceiverStream::new(batch_rx)
                     .chunks(100)
                     .for_each(async |batch| {
-                        let file_tx = file_tx.clone();
+                        let file_tx = configs_file_tx.clone();
                         let new_self = new_self.clone();
                         tokio::spawn(async move {
                             info!(batch_length = batch.len(), "getting batch of resources");
@@ -330,6 +323,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
 
         resource_types.for_each(|resource_type| {
             let batch_tx = batch_tx.clone();
+            let identifiers_file_tx = identifiers_file_tx.clone();
             let list_limiter = list_limiter.clone();
             let new_self = self.clone();
             tokio::spawn(async move {
@@ -344,7 +338,11 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                             .ok()
                     })
                     .for_each(async |resource_identifier| {
-                        batch_tx.send(resource_identifier).await.unwrap();
+                        batch_tx.send(resource_identifier.clone()).await.unwrap();
+                        identifiers_file_tx
+                            .send(new_self.serialize_identifier(resource_identifier))
+                            .await
+                            .unwrap();
                     })
                     .await;
             });
@@ -360,39 +358,6 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             file_tx.send(resource).await.unwrap();
         })
         .await;
-    }
-
-    async fn get_resource_identifiers_with_batch(
-        &self,
-        file_tx: mpsc::Sender<String>,
-        resource_types: impl Iterator<Item = ResourceType>,
-    ) {
-        let list_limiter = Arc::new(Semaphore::new(8));
-
-        resource_types.for_each(|resource_type| {
-            let file_tx = file_tx.clone();
-            let list_limiter = list_limiter.clone();
-            let new_self = self.clone();
-            tokio::spawn(async move {
-                let _permit = list_limiter.acquire().await.unwrap();
-                info!(%resource_type, "listing resource type");
-                new_self
-                    .list_discovered_resources_call(resource_type)
-                    .into_stream_03x()
-                    .filter_map(async |response| {
-                        response
-                            .inspect_err(|err| error!(err = %err, "API error"))
-                            .ok()
-                    })
-                    .for_each(async |resource_identifier| {
-                        file_tx
-                            .send(new_self.serialize_identifier(resource_identifier))
-                            .await
-                            .unwrap();
-                    })
-                    .await;
-            });
-        });
     }
 }
 

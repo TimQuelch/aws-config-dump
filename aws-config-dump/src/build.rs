@@ -90,29 +90,42 @@ async fn fetch_resources(
     let unselectable_types: HashSet<_> = all_types.difference(&selectable_types).cloned().collect();
 
     let (resources_tx, resources_handle) = temp_file_writer();
-    config_client
-        .get_resource_configs_with_select(resources_tx.clone(), cutoff)
-        .await;
+    let (identifiers_tx, identifiers_handle) = temp_file_writer();
 
-    info!("fetching resources which are not available with select API");
+    info!("fetching modified resource configs for selectable types");
+    {
+        let c = config_client.clone();
+        let resources_tx = resources_tx.clone();
+        task::spawn(async move {
+            c.get_resource_configs_with_select(resources_tx, cutoff)
+                .await;
+        });
+    }
 
-    config_client
-        .get_resource_configs_with_batch(resources_tx, unselectable_types.iter().cloned(), cutoff)
-        .await;
+    info!("fetching all resource identifiers for selectable types");
+    {
+        let c = config_client.clone();
+        let identifiers_tx = identifiers_tx.clone();
+        task::spawn(async move {
+            c.get_resource_identifiers_with_select(identifiers_tx.clone())
+                .await;
+        });
+    }
 
-    info!("fetching resource identifiers for selectable types");
+    info!("fetching all resource configs and identifiers for non-selectable types");
 
-    let (identifiers_file_tx, identifiers_handle) = temp_file_writer();
-
-    config_client
-        .get_resource_identifiers_with_select(identifiers_file_tx.clone())
-        .await;
-
-    info!("fetching resource identifiers for non-selectable types");
-
-    config_client
-        .get_resource_identifiers_with_batch(identifiers_file_tx, unselectable_types.into_iter())
-        .await;
+    {
+        let c = config_client.clone();
+        task::spawn(async move {
+            c.get_resource_configs_and_identifiers_with_batch(
+                resources_tx,
+                identifiers_tx,
+                unselectable_types.iter().cloned(),
+                cutoff,
+            )
+            .await;
+        });
+    }
 
     let resources_path = resources_handle.await?;
     let identifiers_path = identifiers_handle.await?;
