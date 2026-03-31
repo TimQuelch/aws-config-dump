@@ -661,6 +661,25 @@ fn item_to_json(item: BaseConfigurationItem) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use aws_sdk_config::{
+        operation::{
+            batch_get_aggregate_resource_config::BatchGetAggregateResourceConfigOutput,
+            batch_get_resource_config::BatchGetResourceConfigOutput,
+            get_aggregate_discovered_resource_counts::GetAggregateDiscoveredResourceCountsOutput,
+            get_discovered_resource_counts::GetDiscoveredResourceCountsOutput,
+            list_aggregate_discovered_resources::ListAggregateDiscoveredResourcesOutput,
+            list_discovered_resources::ListDiscoveredResourcesOutput,
+            select_resource_config::SelectResourceConfigOutput,
+        },
+        types::{
+            AggregateResourceIdentifier, GroupedResourceCount, ResourceCount, ResourceIdentifier,
+        },
+    };
+    use aws_smithy_mocks::{RuleMode, mock, mock_client};
+    use indicatif::ProgressBar;
+
     use super::*;
 
     #[test]
@@ -747,5 +766,361 @@ mod tests {
         let item = BaseConfigurationItem::builder().build();
         let json = item_to_json(item);
         assert_eq!(json["supplementaryConfiguration"], serde_json::json!({}));
+    }
+
+    fn account_fetcher(client: aws_sdk_config::Client) -> AccountFetcher {
+        AccountFetcher {
+            client,
+            account_id: "123456789012".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_counts_single_page() {
+        let rule =
+            mock!(aws_sdk_config::Client::get_discovered_resource_counts).then_output(|| {
+                GetDiscoveredResourceCountsOutput::builder()
+                    .resource_counts(
+                        ResourceCount::builder()
+                            .resource_type(ResourceType::Instance)
+                            .count(5)
+                            .build(),
+                    )
+                    .resource_counts(
+                        ResourceCount::builder()
+                            .resource_type(ResourceType::Bucket)
+                            .count(3)
+                            .build(),
+                    )
+                    .build()
+            });
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let counts = fetcher.get_resource_counts().await;
+        assert_eq!(counts[&ResourceType::Instance], 5);
+        assert_eq!(counts[&ResourceType::Bucket], 3);
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_counts_multi_page() {
+        let rule1 =
+            mock!(aws_sdk_config::Client::get_discovered_resource_counts).then_output(|| {
+                GetDiscoveredResourceCountsOutput::builder()
+                    .resource_counts(
+                        ResourceCount::builder()
+                            .resource_type(ResourceType::Instance)
+                            .count(5)
+                            .build(),
+                    )
+                    .next_token("page2-token")
+                    .build()
+            });
+        let rule2 =
+            mock!(aws_sdk_config::Client::get_discovered_resource_counts).then_output(|| {
+                GetDiscoveredResourceCountsOutput::builder()
+                    .resource_counts(
+                        ResourceCount::builder()
+                            .resource_type(ResourceType::Bucket)
+                            .count(3)
+                            .build(),
+                    )
+                    .build()
+            });
+        let fetcher = account_fetcher(mock_client!(
+            aws_sdk_config,
+            RuleMode::Sequential,
+            [&rule1, &rule2]
+        ));
+        let counts = fetcher.get_resource_counts().await;
+        assert_eq!(counts[&ResourceType::Instance], 5);
+        assert_eq!(counts[&ResourceType::Bucket], 3);
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_counts_with_select() {
+        let rule = mock!(aws_sdk_config::Client::select_resource_config).then_output(|| {
+            SelectResourceConfigOutput::builder()
+                .results(r#"{"resourceType":"AWS::EC2::Instance","COUNT(*)":7}"#)
+                .results(r#"{"resourceType":"AWS::S3::Bucket","COUNT(*)":2}"#)
+                .build()
+        });
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let counts = fetcher.get_resource_counts_with_select().await;
+        assert_eq!(counts[&ResourceType::Instance], 7);
+        assert_eq!(counts[&ResourceType::Bucket], 2);
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_counts_modified_since_cutoff() {
+        let rule = mock!(aws_sdk_config::Client::select_resource_config).then_output(|| {
+            SelectResourceConfigOutput::builder()
+                .results(r#"{"resourceType":"AWS::EC2::Instance","COUNT(*)":4}"#)
+                .build()
+        });
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let cutoff = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .to_utc();
+        let counts = fetcher
+            .get_resource_counts_modified_since_cutoff(cutoff)
+            .await;
+        assert_eq!(counts[&ResourceType::Instance], 4);
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_configs_with_select_sends_items() {
+        let rule = mock!(aws_sdk_config::Client::select_resource_config).then_output(|| {
+            SelectResourceConfigOutput::builder()
+                .results(r#"{"resourceId":"i-1","tags":[]}"#)
+                .results(r#"{"resourceId":"i-2","tags":[]}"#)
+                .build()
+        });
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let (tx, mut rx) = mpsc::channel(8);
+        fetcher
+            .get_resource_configs_with_select(tx, None, ProgressBar::hidden())
+            .await;
+        let mut items = vec![];
+        while let Ok(s) = rx.try_recv() {
+            items.push(s);
+        }
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_configs_with_select_sanitizes_tags() {
+        let rule = mock!(aws_sdk_config::Client::select_resource_config).then_output(|| {
+            SelectResourceConfigOutput::builder()
+                .results(r#"{"resourceId":"i-1","tags":{}}"#)
+                .build()
+        });
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let (tx, mut rx) = mpsc::channel(8);
+        fetcher
+            .get_resource_configs_with_select(tx, None, ProgressBar::hidden())
+            .await;
+        let item: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(item["tags"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_identifiers_with_select() {
+        let rule = mock!(aws_sdk_config::Client::select_resource_config).then_output(|| {
+            SelectResourceConfigOutput::builder()
+                .results(
+                    r#"{"resourceType":"AWS::EC2::Instance","accountId":"123","resourceId":"i-1"}"#,
+                )
+                .results(
+                    r#"{"resourceType":"AWS::EC2::Instance","accountId":"123","resourceId":"i-2"}"#,
+                )
+                .build()
+        });
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let (tx, mut rx) = mpsc::channel(8);
+        fetcher
+            .get_resource_identifiers_with_select(tx, ProgressBar::hidden())
+            .await;
+        let mut items = vec![];
+        while let Ok(s) = rx.try_recv() {
+            items.push(s);
+        }
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn account_get_resource_configs_and_identifiers_with_batch() {
+        let list_rule =
+            mock!(aws_sdk_config::Client::list_discovered_resources).then_output(|| {
+                ListDiscoveredResourcesOutput::builder()
+                    .resource_identifiers(
+                        ResourceIdentifier::builder()
+                            .resource_type(ResourceType::Instance)
+                            .resource_id("i-1")
+                            .build(),
+                    )
+                    .resource_identifiers(
+                        ResourceIdentifier::builder()
+                            .resource_type(ResourceType::Instance)
+                            .resource_id("i-2")
+                            .build(),
+                    )
+                    .build()
+            });
+        let batch_rule =
+            mock!(aws_sdk_config::Client::batch_get_resource_config).then_output(|| {
+                BatchGetResourceConfigOutput::builder()
+                    .base_configuration_items(
+                        BaseConfigurationItem::builder()
+                            .resource_id("i-1")
+                            .resource_type(ResourceType::Instance)
+                            .build(),
+                    )
+                    .base_configuration_items(
+                        BaseConfigurationItem::builder()
+                            .resource_id("i-2")
+                            .resource_type(ResourceType::Instance)
+                            .build(),
+                    )
+                    .build()
+            });
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&list_rule, &batch_rule]));
+
+        let (configs_tx, mut configs_rx) = mpsc::channel(16);
+        let (ids_tx, mut ids_rx) = mpsc::channel(16);
+        fetcher
+            .get_resource_configs_and_identifiers_with_batch(
+                configs_tx,
+                ids_tx,
+                vec![ResourceType::Instance].into_iter(),
+                None,
+                ProgressBar::hidden(),
+            )
+            .await;
+
+        let mut identifiers = vec![];
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while identifiers.len() < 2 {
+                identifiers.push(ids_rx.recv().await.unwrap());
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut configs = vec![];
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while configs.len() < 2 {
+                configs.push(configs_rx.recv().await.unwrap());
+            }
+        })
+        .await
+        .unwrap();
+
+        let id_json: serde_json::Value = serde_json::from_str(&identifiers[0]).unwrap();
+        assert_eq!(id_json["accountId"], "123456789012");
+    }
+
+    #[test]
+    fn account_serialize_identifier() {
+        // Build a dummy rule just to construct the client — it won't be called
+        let rule = mock!(aws_sdk_config::Client::get_discovered_resource_counts)
+            .then_output(|| GetDiscoveredResourceCountsOutput::builder().build());
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let identifier = ResourceIdentifier::builder()
+            .resource_type(ResourceType::Instance)
+            .resource_id("i-123")
+            .build();
+        let json: serde_json::Value =
+            serde_json::from_str(&fetcher.serialize_identifier(identifier)).unwrap();
+        assert_eq!(json["resourceType"], "AWS::EC2::Instance");
+        assert_eq!(json["accountId"], "123456789012");
+        assert_eq!(json["resourceId"], "i-123");
+    }
+
+    fn aggregate_fetcher(client: aws_sdk_config::Client) -> AggregateFetcher {
+        AggregateFetcher {
+            client,
+            aggregator: "my-aggregator".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn aggregate_get_resource_counts() {
+        let rule = mock!(aws_sdk_config::Client::get_aggregate_discovered_resource_counts)
+            .then_output(|| {
+                GetAggregateDiscoveredResourceCountsOutput::builder()
+                    .grouped_resource_counts(
+                        GroupedResourceCount::builder()
+                            .group_name("AWS::EC2::Instance")
+                            .resource_count(10)
+                            .build()
+                            .unwrap(),
+                    )
+                    .grouped_resource_counts(
+                        GroupedResourceCount::builder()
+                            .group_name("AWS::S3::Bucket")
+                            .resource_count(6)
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+            });
+        let fetcher = aggregate_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let counts = fetcher.get_resource_counts().await;
+        assert_eq!(counts[&ResourceType::Instance], 10);
+        assert_eq!(counts[&ResourceType::Bucket], 6);
+    }
+
+    #[tokio::test]
+    async fn aggregate_get_resource_configs_and_identifiers_with_batch() {
+        let list_rule = mock!(aws_sdk_config::Client::list_aggregate_discovered_resources)
+            .then_output(|| {
+                ListAggregateDiscoveredResourcesOutput::builder()
+                    .resource_identifiers(
+                        AggregateResourceIdentifier::builder()
+                            .source_account_id("111111111111")
+                            .source_region("us-east-1")
+                            .resource_id("bucket-1")
+                            .resource_type(ResourceType::Bucket)
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+            });
+        let batch_rule = mock!(aws_sdk_config::Client::batch_get_aggregate_resource_config)
+            .then_output(|| {
+                BatchGetAggregateResourceConfigOutput::builder()
+                    .base_configuration_items(
+                        BaseConfigurationItem::builder()
+                            .account_id("111111111111")
+                            .resource_id("bucket-1")
+                            .resource_type(ResourceType::Bucket)
+                            .build(),
+                    )
+                    .build()
+            });
+        let fetcher = aggregate_fetcher(mock_client!(aws_sdk_config, [&list_rule, &batch_rule]));
+
+        let (configs_tx, mut configs_rx) = mpsc::channel(16);
+        let (ids_tx, mut ids_rx) = mpsc::channel(16);
+        fetcher
+            .get_resource_configs_and_identifiers_with_batch(
+                configs_tx,
+                ids_tx,
+                vec![ResourceType::Bucket].into_iter(),
+                None,
+                ProgressBar::hidden(),
+            )
+            .await;
+
+        let id = tokio::time::timeout(Duration::from_secs(5), ids_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let id_json: serde_json::Value = serde_json::from_str(&id).unwrap();
+        assert_eq!(id_json["accountId"], "111111111111");
+        assert_eq!(id_json["resourceId"], "bucket-1");
+
+        let _config = tokio::time::timeout(Duration::from_secs(5), configs_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn aggregate_serialize_identifier() {
+        let rule = mock!(aws_sdk_config::Client::get_discovered_resource_counts)
+            .then_output(|| GetDiscoveredResourceCountsOutput::builder().build());
+        let fetcher = aggregate_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let identifier = AggregateResourceIdentifier::builder()
+            .source_account_id("222222222222")
+            .source_region("eu-west-1")
+            .resource_id("sg-abc")
+            .resource_type(ResourceType::SecurityGroup)
+            .build()
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&fetcher.serialize_identifier(identifier)).unwrap();
+        assert_eq!(json["accountId"], "222222222222");
+        assert_eq!(json["resourceType"], "AWS::EC2::SecurityGroup");
+        assert_eq!(json["resourceId"], "sg-abc");
     }
 }

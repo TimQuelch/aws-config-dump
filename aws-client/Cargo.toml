@@ -33,5 +33,12 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 
+[dev-dependencies]
+aws-smithy-mocks = "0.2"
+aws-sdk-config = { version = "1", features = ["test-util"] }
+aws-sdk-organizations = { version = "1", features = ["test-util"] }
+aws-sdk-s3 = { version = "1", features = ["test-util"] }
+aws-sdk-sts = { version = "1", features = ["test-util"] }
+
 [lints]
 workspace = true

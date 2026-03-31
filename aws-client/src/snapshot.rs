@@ -245,3 +245,169 @@ async fn download_snapshot_object(
 
     anyhow::Result::<_>::Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use aws_sdk_config::{
+        operation::describe_delivery_channels::DescribeDeliveryChannelsOutput,
+        types::ConfigSnapshotDeliveryProperties,
+    };
+    use aws_sdk_s3::{
+        operation::{get_object::GetObjectOutput, list_objects_v2::ListObjectsV2Output},
+        primitives::ByteStream,
+        types::CommonPrefix,
+    };
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write as _;
+
+    use aws_smithy_mocks::{RuleMode, mock, mock_client};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn get_snapshot_bucket_success() {
+        let rule = mock!(aws_sdk_config::Client::describe_delivery_channels).then_output(|| {
+            DescribeDeliveryChannelsOutput::builder()
+                .delivery_channels(
+                    aws_sdk_config::types::DeliveryChannel::builder()
+                        .s3_bucket_name("my-bucket")
+                        .s3_key_prefix("my-prefix")
+                        .config_snapshot_delivery_properties(
+                            ConfigSnapshotDeliveryProperties::builder().build(),
+                        )
+                        .build(),
+                )
+                .build()
+        });
+        let client = mock_client!(aws_sdk_config, [&rule]);
+        let (bucket, prefix) = get_snapshot_bucket(client).await.unwrap();
+        assert_eq!(bucket, "my-bucket");
+        assert_eq!(prefix, "my-prefix");
+    }
+
+    #[tokio::test]
+    async fn get_snapshot_bucket_no_channels_errors() {
+        let rule = mock!(aws_sdk_config::Client::describe_delivery_channels)
+            .then_output(|| DescribeDeliveryChannelsOutput::builder().build());
+        let client = mock_client!(aws_sdk_config, [&rule]);
+        let err = get_snapshot_bucket(client).await.unwrap_err();
+        assert!(err.to_string().contains("no delivery channels"));
+    }
+
+    #[tokio::test]
+    async fn get_snapshot_bucket_multiple_channels_errors() {
+        let props = ConfigSnapshotDeliveryProperties::builder().build();
+        let rule =
+            mock!(aws_sdk_config::Client::describe_delivery_channels).then_output(move || {
+                DescribeDeliveryChannelsOutput::builder()
+                    .delivery_channels(
+                        aws_sdk_config::types::DeliveryChannel::builder()
+                            .s3_bucket_name("bucket-1")
+                            .s3_key_prefix("prefix-1")
+                            .config_snapshot_delivery_properties(props.clone())
+                            .build(),
+                    )
+                    .delivery_channels(
+                        aws_sdk_config::types::DeliveryChannel::builder()
+                            .s3_bucket_name("bucket-2")
+                            .s3_key_prefix("prefix-2")
+                            .config_snapshot_delivery_properties(props.clone())
+                            .build(),
+                    )
+                    .build()
+            });
+        let client = mock_client!(aws_sdk_config, [&rule]);
+        let err = get_snapshot_bucket(client).await.unwrap_err();
+        assert!(err.to_string().contains("multiple delivery channels"));
+    }
+
+    #[tokio::test]
+    async fn next_prefixes_returns_sorted() {
+        let rule = mock!(aws_sdk_s3::Client::list_objects_v2).then_output(|| {
+            ListObjectsV2Output::builder()
+                .common_prefixes(CommonPrefix::builder().prefix("prefix/c/").build())
+                .common_prefixes(CommonPrefix::builder().prefix("prefix/a/").build())
+                .common_prefixes(CommonPrefix::builder().prefix("prefix/b/").build())
+                .build()
+        });
+        let client = mock_client!(aws_sdk_s3, [&rule]);
+        let prefixes = next_prefixes(&client, "bucket", "prefix/").await.unwrap();
+        assert_eq!(prefixes, vec!["prefix/a/", "prefix/b/", "prefix/c/"]);
+    }
+
+    #[tokio::test]
+    async fn next_prefixes_multi_page() {
+        let rule1 = mock!(aws_sdk_s3::Client::list_objects_v2).then_output(|| {
+            ListObjectsV2Output::builder()
+                .common_prefixes(CommonPrefix::builder().prefix("prefix/b/").build())
+                .next_continuation_token("page2-token")
+                .build()
+        });
+        let rule2 = mock!(aws_sdk_s3::Client::list_objects_v2).then_output(|| {
+            ListObjectsV2Output::builder()
+                .common_prefixes(CommonPrefix::builder().prefix("prefix/a/").build())
+                .build()
+        });
+        let client = mock_client!(aws_sdk_s3, RuleMode::Sequential, [&rule1, &rule2]);
+        let prefixes = next_prefixes(&client, "bucket", "prefix/").await.unwrap();
+        assert_eq!(prefixes, vec!["prefix/a/", "prefix/b/"]);
+    }
+
+    fn gzip_bytes(content: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(content).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[tokio::test]
+    async fn download_snapshot_object_writes_items() {
+        let json = br#"{"configurationItems":[{"resourceId":"i-1"},{"resourceId":"i-2"}]}"#;
+        let compressed = gzip_bytes(json);
+        let rule = mock!(aws_sdk_s3::Client::get_object).then_output(move || {
+            GetObjectOutput::builder()
+                .body(ByteStream::from(compressed.clone()))
+                .build()
+        });
+        let client = mock_client!(aws_sdk_s3, [&rule]);
+        let dir = tempfile::TempDir::new().unwrap();
+        download_snapshot_object(
+            client,
+            "bucket".to_string(),
+            "some/path/snapshot.json.gz".to_string(),
+            dir.path().to_owned(),
+        )
+        .await
+        .unwrap();
+
+        let output_path = dir.path().join("snapshot.json");
+        let content = tokio::fs::read_to_string(output_path).await.unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let item0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        let item1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(item0["resourceId"], "i-1");
+        assert_eq!(item1["resourceId"], "i-2");
+    }
+
+    #[tokio::test]
+    async fn download_snapshot_object_malformed_json_errors() {
+        let json = br#"{"not_config_items":[]}"#;
+        let compressed = gzip_bytes(json);
+        let rule = mock!(aws_sdk_s3::Client::get_object).then_output(move || {
+            GetObjectOutput::builder()
+                .body(ByteStream::from(compressed.clone()))
+                .build()
+        });
+        let client = mock_client!(aws_sdk_s3, [&rule]);
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = download_snapshot_object(
+            client,
+            "bucket".to_string(),
+            "snapshot.json.gz".to_string(),
+            dir.path().to_owned(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("malformed json"));
+    }
+}
