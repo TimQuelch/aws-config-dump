@@ -94,7 +94,7 @@ async fn fetch_resources(
     let selectable_types: HashSet<_> = selectable_type_counts.keys().cloned().collect();
     let unselectable_types: HashSet<_> = all_types.difference(&selectable_types).cloned().collect();
 
-    let modified_counts = if let Some(cutoff) = cutoff {
+    let modified_type_counts = if let Some(cutoff) = cutoff {
         config_client
             .get_resource_counts_modified_since_cutoff(cutoff)
             .await
@@ -102,7 +102,7 @@ async fn fetch_resources(
         HashMap::new()
     };
 
-    info!(?modified_counts, "modified counts");
+    info!(?modified_type_counts, "modified counts");
 
     let (resources_tx, resources_handle) = temp_file_writer();
     let (identifiers_tx, identifiers_handle) = temp_file_writer();
@@ -114,9 +114,9 @@ async fn fetch_resources(
         let bar = progress.add(util::progress_bar(
             "fetching modified resources",
             if cutoff.is_some() {
-                selectable_type_counts.values().sum::<i64>()
+                modified_type_counts.values().sum::<i64>()
             } else {
-                type_counts.values().sum()
+                selectable_type_counts.values().sum()
             }
             .try_into()
             .unwrap(),
@@ -133,7 +133,11 @@ async fn fetch_resources(
         let identifiers_tx = identifiers_tx.clone();
         let bar = progress.add(util::progress_bar(
             "fetching resource identifers",
-            type_counts.values().sum::<i64>().try_into().unwrap(),
+            selectable_type_counts
+                .values()
+                .sum::<i64>()
+                .try_into()
+                .unwrap(),
         ));
         task::spawn(async move {
             c.get_resource_identifiers_with_select(identifiers_tx.clone(), bar)
