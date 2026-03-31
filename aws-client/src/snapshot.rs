@@ -22,8 +22,8 @@ use crate::sdk_config;
 ///
 /// # Errors
 /// If any API call fails, or if tempdir cannot be created
-pub async fn get_snapshots() -> anyhow::Result<TempDir> {
-    let config = sdk_config::load_config().await;
+pub async fn get_snapshots(profile: Option<String>) -> anyhow::Result<TempDir> {
+    let config = sdk_config::load_config(profile).await;
     let config_client = aws_sdk_config::Client::new(&config);
 
     let (bucket, prefix) = get_snapshot_bucket(config_client).await?;

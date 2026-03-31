@@ -172,8 +172,8 @@ impl DispatchingClient {
     ///
     /// # Errors
     /// If no aggregator is provided, and the API call to retrieve the account id fails
-    pub async fn new(aggregator: Option<String>) -> Result<Self> {
-        let config = &sdk_config::load_config().await;
+    pub async fn new(aggregator: Option<String>, profile: Option<String>) -> Result<Self> {
+        let config = &sdk_config::load_config(profile).await;
         let client = aws_sdk_config::Client::new(config);
         Ok(Self {
             fetcher: if let Some(aggregator) = aggregator {

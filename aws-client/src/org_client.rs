@@ -11,8 +11,10 @@ use crate::sdk_config;
 ///
 /// # Errors
 /// If any API query fails
-pub async fn fetch_org_accounts() -> anyhow::Result<Vec<(String, Option<String>)>> {
-    let config = sdk_config::load_config().await;
+pub async fn fetch_org_accounts(
+    profile: Option<String>,
+) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let config = sdk_config::load_config(profile).await;
     fetch_org_accounts_inner(aws_sdk_organizations::Client::new(&config)).await
 }
 

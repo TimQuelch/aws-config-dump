@@ -19,19 +19,27 @@ use crate::builtin_alterations;
 struct DbConfig {
     aggregator_name: Option<String>,
     path: Option<PathBuf>,
+    aws_profile: Option<String>,
+}
+
+struct ResolvedDbConfig {
+    path: PathBuf,
+    aggregator_name: Option<String>,
+    aws_profile: Option<String>,
 }
 
 impl DbConfig {
-    fn resolve(&self, name: &str) -> (PathBuf, Option<String>) {
-        (
-            self.path.clone().unwrap_or_else(|| {
+    fn resolve(&self, name: &str) -> ResolvedDbConfig {
+        ResolvedDbConfig {
+            path: self.path.clone().unwrap_or_else(|| {
                 project_dirs()
                     .data_dir()
                     .join(name)
                     .with_added_extension("duckdb")
             }),
-            self.aggregator_name.clone(),
-        )
+            aggregator_name: self.aggregator_name.clone(),
+            aws_profile: self.aws_profile.clone(),
+        }
     }
 }
 
@@ -87,6 +95,7 @@ async fn read_or_default(path: &Path) -> Result<Option<Vec<u8>>> {
 
 pub struct Config {
     pub db_path: PathBuf,
+    pub aws_profile: Option<String>,
     pub aggregator_name: Option<String>,
     pub query_extra_columns: HashMap<String, Vec<String>>,
     pub schema_alterations: Vec<SchemaAlteration>,
@@ -95,7 +104,11 @@ pub struct Config {
 
 impl Config {
     pub fn load(config_file: Option<ConfigFile>, db_name: Option<&str>) -> Result<Config> {
-        let (db_path, aggregator_name) = Config::resolve_db(config_file.as_ref(), db_name)?;
+        let ResolvedDbConfig {
+            path,
+            aws_profile,
+            aggregator_name,
+        } = Config::resolve_db(config_file.as_ref(), db_name)?;
 
         let (query_extra_columns, schema_alterations, global_schema_alterations) = config_file
             .map(|x| {
@@ -108,7 +121,8 @@ impl Config {
             .unwrap_or_default();
 
         Ok(Self {
-            db_path,
+            db_path: path,
+            aws_profile,
             aggregator_name,
             query_extra_columns,
             schema_alterations,
@@ -116,10 +130,7 @@ impl Config {
         })
     }
 
-    fn resolve_db(
-        config_file: Option<&ConfigFile>,
-        db: Option<&str>,
-    ) -> Result<(PathBuf, Option<String>)> {
+    fn resolve_db(config_file: Option<&ConfigFile>, db: Option<&str>) -> Result<ResolvedDbConfig> {
         match (config_file, db) {
             (Some(file), Some(db)) => {
                 let Some(db_conf) = file.databases.get(db) else {
@@ -204,6 +215,7 @@ aggregator_name = "my-aggregator"
 
 [databases.other]
 path = "/path/to/db.otherext"
+aws_profile = "some_profile"
 
 [query_extra_columns]
 ec2_vpc = ["tags['Name']", "cidrBlock"]
@@ -228,14 +240,16 @@ sql = 'ALTER TABLE "{table}" ADD COLUMN bar VARCHAR'
                     "default".to_owned(),
                     DbConfig {
                         path: None,
-                        aggregator_name: Some("my-aggregator".to_owned())
+                        aggregator_name: Some("my-aggregator".to_owned()),
+                        aws_profile: None,
                     }
                 ),
                 (
                     "other".to_owned(),
                     DbConfig {
                         path: Some(PathBuf::from("/path/to/db.otherext")),
-                        aggregator_name: None
+                        aggregator_name: None,
+                        aws_profile: Some("some_profile".to_string()),
                     }
                 ),
             ])

@@ -45,7 +45,7 @@ pub async fn build_database(
 
     match fetch_source {
         FetchSource::Snapshots => {
-            let mut dir = snapshot::get_snapshots().await?;
+            let mut dir = snapshot::get_snapshots(config.aws_profile.clone()).await?;
             dir.disable_cleanup(true);
             db::build_resources_table_from_snapshots(&db_pool, &dir).await?;
         }
@@ -62,15 +62,20 @@ pub async fn build_database(
                 info!("fetching all resources");
             }
 
-            let (resources_path, identifiers_path) =
-                fetch_resources(aggregator, cutoff, progress.clone()).await?;
+            let (resources_path, identifiers_path) = fetch_resources(
+                aggregator,
+                config.aws_profile.clone(),
+                cutoff,
+                progress.clone(),
+            )
+            .await?;
             db::build_resources_table(&db_pool, &resources_path, &identifiers_path).await?;
         }
         FetchSource::Skip => {}
     }
 
     let org_accounts = if fetch_org_accounts {
-        Some(org_client::fetch_org_accounts().await?)
+        Some(org_client::fetch_org_accounts(config.aws_profile.clone()).await?)
     } else {
         None
     };
@@ -82,10 +87,11 @@ pub async fn build_database(
 
 async fn fetch_resources(
     aggregator: Option<String>,
+    profile: Option<String>,
     cutoff: Option<DateTime<Utc>>,
     progress: MultiProgress,
 ) -> anyhow::Result<(TempPath, TempPath)> {
-    let config_client = DispatchingClient::new(aggregator.clone()).await?;
+    let config_client = DispatchingClient::new(aggregator.clone(), profile).await?;
 
     let type_counts = config_client.get_resource_counts().await;
     let all_types: HashSet<_> = type_counts.keys().cloned().collect();
