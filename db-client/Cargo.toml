@@ -11,9 +11,9 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1"
-bb8 = { version = "0.9.1", default-features = false }
+bb8 = { version = "0.9", default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
-duckdb = { version = "1.4", features = ["chrono"] }
+duckdb = { version = "1", features = ["chrono"] }
 tokio = { version = "1", features = ["full"] }
 
 [lints]

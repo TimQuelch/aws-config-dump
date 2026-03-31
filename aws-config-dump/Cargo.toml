@@ -18,7 +18,7 @@ clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = { version = "4", features = ["unstable-dynamic"] }
 db-client = { path = "../db-client" }
 directories = "6"
-duckdb = { version = "1.4", features = ["chrono"] }
+duckdb = { version = "1", features = ["chrono"] }
 futures = "0.3"
 indicatif = { version = "0.18", default-features = false }
 serde = { version = "1", features = ["derive"] }
