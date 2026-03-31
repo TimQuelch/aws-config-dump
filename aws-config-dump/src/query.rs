@@ -75,14 +75,13 @@ fn build_query(
                 acc
             });
     format!(
-        "WITH input AS (
+        "CREATE OR REPLACE TEMPORARY VIEW input AS 
             SELECT {columns} FROM query_table('{table}')
             LEFT JOIN accounts USING (accountId)
             WHERE true
             {account_clause}
             {where_clauses}
-            {where_raw_clauses}
-        )
+            {where_raw_clauses};
         {user_query};",
     )
 }
