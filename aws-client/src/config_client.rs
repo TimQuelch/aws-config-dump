@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{collections::HashMap, error::Error, sync::Arc};
+use std::{collections::HashMap, convert::Into, error::Error, sync::Arc};
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use aws_sdk_config::{
     operation::{
         batch_get_aggregate_resource_config::BatchGetAggregateResourceConfigOutput,
@@ -20,7 +20,7 @@ use aws_sdk_config::{
 use aws_smithy_async::future::pagination_stream::PaginationStream;
 use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
 use chrono::{DateTime, Utc};
-use futures::stream::{self, Stream, StreamExt};
+use futures::stream::{StreamExt, TryStreamExt};
 use indicatif::ProgressBar;
 use serde::{self, Deserialize, Serialize, ser::SerializeStruct};
 use tokio::{
@@ -28,7 +28,7 @@ use tokio::{
     task,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::sdk_config;
 
@@ -52,12 +52,16 @@ const QUERY: &str = concat!(
 );
 
 pub trait ConfigFetchClient {
-    fn get_resource_counts(&self) -> impl Future<Output = HashMap<ResourceType, i64>>;
-    fn get_resource_counts_with_select(&self) -> impl Future<Output = HashMap<ResourceType, i64>>;
+    fn get_resource_counts(
+        &self,
+    ) -> impl Future<Output = anyhow::Result<HashMap<ResourceType, i64>>>;
+    fn get_resource_counts_with_select(
+        &self,
+    ) -> impl Future<Output = anyhow::Result<HashMap<ResourceType, i64>>>;
     fn get_resource_counts_modified_since_cutoff(
         &self,
         cutoff: DateTime<Utc>,
-    ) -> impl Future<Output = HashMap<ResourceType, i64>>;
+    ) -> impl Future<Output = anyhow::Result<HashMap<ResourceType, i64>>>;
     fn get_resource_configs_with_select(
         &self,
         file_tx: mpsc::Sender<String>,
@@ -84,24 +88,24 @@ trait ConfigFetcher {
 
     fn get_discovered_resource_counts_call(
         &self,
-    ) -> PaginationStream<Result<impl ResourceCountPage, impl Error>>;
+    ) -> PaginationStream<Result<impl ResourceCountPage, impl Error + Send + Sync + 'static>>;
     fn select_resource_config_call(
         &self,
         query: String,
-    ) -> PaginationStream<Result<String, impl Error>>;
+    ) -> PaginationStream<Result<String, impl Error + Send + Sync + 'static>>;
     fn list_discovered_resources_call(
         &self,
         resource_type: ResourceType,
-    ) -> PaginationStream<Result<Self::Identifier, impl Error + Send>>;
+    ) -> PaginationStream<Result<Self::Identifier, impl Error + Send + Sync + 'static>>;
     fn batch_get_resources_call(
         &self,
         identifiers: Vec<Self::Identifier>,
-    ) -> impl Future<Output = Result<impl BatchResponse + Send, impl Error>> + Send;
+    ) -> impl Future<Output = Result<impl BatchResponse + Send, impl Error + Send + Sync + 'static>> + Send;
     fn serialize_identifier(&self, identifier: Self::Identifier) -> String;
 }
 
 trait ResourceCountPage {
-    fn count_iter(&self) -> impl Iterator<Item = (ResourceType, i64)>;
+    fn count_iter(self) -> impl Iterator<Item = (ResourceType, i64)>;
 }
 
 trait BatchResponse {
@@ -172,7 +176,7 @@ impl DispatchingClient {
     ///
     /// # Errors
     /// If no aggregator is provided, and the API call to retrieve the account id fails
-    pub async fn new(aggregator: Option<String>, profile: Option<String>) -> Result<Self> {
+    pub async fn new(aggregator: Option<String>, profile: Option<String>) -> anyhow::Result<Self> {
         let config = &sdk_config::load_config(profile).await;
         let client = aws_sdk_config::Client::new(config);
         Ok(Self {
@@ -208,14 +212,14 @@ macro_rules! dispatch {
 }
 
 impl ConfigFetchClient for DispatchingClient {
-    dispatch!(get_resource_counts() -> HashMap<ResourceType, i64>);
+    dispatch!(get_resource_counts() -> anyhow::Result<HashMap<ResourceType, i64>>);
 
-    dispatch!(get_resource_counts_with_select() -> HashMap<ResourceType, i64>);
+    dispatch!(get_resource_counts_with_select() -> anyhow::Result<HashMap<ResourceType, i64>>);
 
     dispatch!(
         get_resource_counts_modified_since_cutoff(
             cutoff: DateTime<Utc>
-        ) -> HashMap<ResourceType, i64>
+        ) -> anyhow::Result<HashMap<ResourceType, i64>>
     );
 
     dispatch!(
@@ -245,46 +249,48 @@ impl ConfigFetchClient for DispatchingClient {
 }
 
 impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
-    async fn get_resource_counts(&self) -> HashMap<ResourceType, i64> {
+    async fn get_resource_counts(&self) -> anyhow::Result<HashMap<ResourceType, i64>> {
         self.get_discovered_resource_counts_call()
             .into_stream_03x()
-            .filter_map(async |response| {
-                response
-                    .inspect_err(|err| error!(err = %err, "API error"))
-                    .ok()
+            .err_into()
+            .try_fold(HashMap::new(), async |mut acc, page| {
+                acc.extend(page.count_iter());
+                Ok(acc)
             })
-            .flat_map(|page| stream::iter(page.count_iter().collect::<Vec<_>>()))
-            .collect()
             .await
     }
 
-    async fn get_resource_counts_with_select(&self) -> HashMap<ResourceType, i64> {
+    async fn get_resource_counts_with_select(&self) -> anyhow::Result<HashMap<ResourceType, i64>> {
         let query = "SELECT resourceType, COUNT(*) GROUP BY resourceType;".to_string();
 
-        select_config_stream(self, query)
-            .map(|row| {
+        self.select_resource_config_call(query)
+            .into_stream_03x()
+            .err_into()
+            .map_ok(|row| {
                 let parsed: ResourceCountWithSelectResultRow = serde_json::from_str(&row).unwrap();
                 (parsed.resource_type.into(), parsed.count)
             })
-            .collect()
+            .try_collect()
             .await
     }
 
     async fn get_resource_counts_modified_since_cutoff(
         &self,
         cutoff: DateTime<Utc>,
-    ) -> HashMap<ResourceType, i64> {
+    ) -> anyhow::Result<HashMap<ResourceType, i64>> {
         let query = format!(
             "SELECT resourceType, COUNT(*) WHERE configurationItemCaptureTime > '{}' GROUP BY resourceType;",
             cutoff.to_rfc3339()
         );
 
-        select_config_stream(self, query)
-            .map(|row| {
+        self.select_resource_config_call(query)
+            .into_stream_03x()
+            .err_into()
+            .map_ok(|row| {
                 let parsed: ResourceCountWithSelectResultRow = serde_json::from_str(&row).unwrap();
                 (parsed.resource_type.into(), parsed.count)
             })
-            .collect()
+            .try_collect()
             .await
     }
 
@@ -303,15 +309,18 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             format!("{QUERY};")
         };
 
-        select_config_stream(self, query)
-            .for_each(async |resource| {
+        self.select_resource_config_call(query)
+            .into_stream_03x()
+            .try_for_each(async |resource| {
                 let resource = task::spawn_blocking(move || sanitize_resource_config(resource))
                     .await
                     .unwrap();
                 file_tx.send(resource).await.unwrap();
                 progress.inc(1);
+                Ok(())
             })
-            .await;
+            .await
+            .unwrap();
     }
 
     async fn get_resource_configs_and_identifiers_with_batch(
@@ -377,19 +386,16 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                 new_self
                     .list_discovered_resources_call(resource_type)
                     .into_stream_03x()
-                    .filter_map(async |response| {
-                        response
-                            .inspect_err(|err| error!(err = %err, "API error"))
-                            .ok()
-                    })
-                    .for_each(async |resource_identifier| {
+                    .try_for_each(async |resource_identifier| {
                         batch_tx.send(resource_identifier.clone()).await.unwrap();
                         identifiers_file_tx
                             .send(new_self.serialize_identifier(resource_identifier))
                             .await
                             .unwrap();
+                        Ok(())
                     })
-                    .await;
+                    .await
+                    .unwrap();
             });
         });
     }
@@ -399,15 +405,15 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         file_tx: mpsc::Sender<String>,
         progress: ProgressBar,
     ) {
-        select_config_stream(
-            self,
-            "SELECT resourceType, accountId, resourceId;".to_string(),
-        )
-        .for_each(async |resource| {
-            file_tx.send(resource).await.unwrap();
-            progress.inc(1);
-        })
-        .await;
+        self.select_resource_config_call("SELECT resourceType, accountId, resourceId;".to_string())
+            .into_stream_03x()
+            .try_for_each(async |resource| {
+                file_tx.send(resource).await.unwrap();
+                progress.inc(1);
+                Ok(())
+            })
+            .await
+            .unwrap(); // TODO remove
     }
 }
 
@@ -416,7 +422,7 @@ impl ConfigFetcher for AccountFetcher {
 
     fn get_discovered_resource_counts_call(
         &self,
-    ) -> PaginationStream<Result<impl ResourceCountPage, impl Error>> {
+    ) -> PaginationStream<Result<impl ResourceCountPage, impl Error + Send + Sync + 'static>> {
         self.client
             .get_discovered_resource_counts()
             .into_paginator()
@@ -426,7 +432,7 @@ impl ConfigFetcher for AccountFetcher {
     fn select_resource_config_call(
         &self,
         query: String,
-    ) -> PaginationStream<Result<String, impl Error>> {
+    ) -> PaginationStream<Result<String, impl Error + Send + Sync + 'static>> {
         self.client
             .select_resource_config()
             .expression(query)
@@ -439,7 +445,7 @@ impl ConfigFetcher for AccountFetcher {
     fn list_discovered_resources_call(
         &self,
         resource_type: ResourceType,
-    ) -> PaginationStream<Result<ResourceIdentifier, impl Error>> {
+    ) -> PaginationStream<Result<ResourceIdentifier, impl Error + Send + Sync + 'static>> {
         self.client
             .list_discovered_resources()
             .resource_type(resource_type)
@@ -452,7 +458,8 @@ impl ConfigFetcher for AccountFetcher {
     fn batch_get_resources_call(
         &self,
         identifiers: Vec<Self::Identifier>,
-    ) -> impl Future<Output = Result<impl BatchResponse + Send, impl Error>> + Send {
+    ) -> impl Future<Output = Result<impl BatchResponse + Send, impl Error + Send + Sync + 'static>> + Send
+    {
         self.client
             .batch_get_resource_config()
             .set_resource_keys(Some(
@@ -484,7 +491,7 @@ impl ConfigFetcher for AggregateFetcher {
 
     fn get_discovered_resource_counts_call(
         &self,
-    ) -> PaginationStream<Result<impl ResourceCountPage, impl Error>> {
+    ) -> PaginationStream<Result<impl ResourceCountPage, impl Error + Send + Sync + 'static>> {
         self.client
             .get_aggregate_discovered_resource_counts()
             .configuration_aggregator_name(&self.aggregator)
@@ -496,7 +503,7 @@ impl ConfigFetcher for AggregateFetcher {
     fn select_resource_config_call(
         &self,
         query: String,
-    ) -> PaginationStream<Result<String, impl Error>> {
+    ) -> PaginationStream<Result<String, impl Error + Send + Sync + 'static>> {
         self.client
             .select_aggregate_resource_config()
             .configuration_aggregator_name(&self.aggregator)
@@ -510,7 +517,7 @@ impl ConfigFetcher for AggregateFetcher {
     fn list_discovered_resources_call(
         &self,
         resource_type: ResourceType,
-    ) -> PaginationStream<Result<Self::Identifier, impl Error>> {
+    ) -> PaginationStream<Result<Self::Identifier, impl Error + Send + Sync + 'static>> {
         self.client
             .list_aggregate_discovered_resources()
             .configuration_aggregator_name(&self.aggregator)
@@ -524,7 +531,8 @@ impl ConfigFetcher for AggregateFetcher {
     fn batch_get_resources_call(
         &self,
         identifiers: Vec<Self::Identifier>,
-    ) -> impl Future<Output = Result<impl BatchResponse + Send, impl Error>> + Send {
+    ) -> impl Future<Output = Result<impl BatchResponse + Send, impl Error + Send + Sync + 'static>> + Send
+    {
         self.client
             .batch_get_aggregate_resource_config()
             .configuration_aggregator_name(&self.aggregator)
@@ -538,24 +546,25 @@ impl ConfigFetcher for AggregateFetcher {
 }
 
 impl ResourceCountPage for GetDiscoveredResourceCountsOutput {
-    fn count_iter(&self) -> impl Iterator<Item = (ResourceType, i64)> {
-        self.resource_counts().iter().map(|resource_count| {
-            (
-                resource_count.resource_type().unwrap().clone(),
-                resource_count.count(),
-            )
-        })
+    fn count_iter(self) -> impl Iterator<Item = (ResourceType, i64)> {
+        self.resource_counts
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rc| (rc.resource_type.unwrap(), rc.count))
     }
 }
 
 impl ResourceCountPage for GetAggregateDiscoveredResourceCountsOutput {
-    fn count_iter(&self) -> impl Iterator<Item = (ResourceType, i64)> {
-        self.grouped_resource_counts().iter().map(|resource_count| {
-            (
-                ResourceType::from(resource_count.group_name()),
-                resource_count.resource_count(),
-            )
-        })
+    fn count_iter(self) -> impl Iterator<Item = (ResourceType, i64)> {
+        self.grouped_resource_counts
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rc| {
+                (
+                    ResourceType::from(rc.group_name.as_str()),
+                    rc.resource_count,
+                )
+            })
     }
 }
 
@@ -577,16 +586,6 @@ impl BatchResponse for BatchGetAggregateResourceConfigOutput {
     fn into_items(self) -> Vec<BaseConfigurationItem> {
         self.base_configuration_items.unwrap_or_default()
     }
-}
-
-fn select_config_stream<C: ConfigFetcher>(
-    fetcher: &C,
-    query: String,
-) -> impl Stream<Item = String> + '_ {
-    fetcher
-        .select_resource_config_call(query)
-        .into_stream_03x()
-        .filter_map(async |r| r.inspect_err(|e| error!(err = %e, "API error")).ok())
 }
 
 fn sanitize_resource_config(mut resource: String) -> String {
@@ -795,7 +794,7 @@ mod tests {
                     .build()
             });
         let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
-        let counts = fetcher.get_resource_counts().await;
+        let counts = fetcher.get_resource_counts().await.unwrap();
         assert_eq!(counts[&ResourceType::Instance], 5);
         assert_eq!(counts[&ResourceType::Bucket], 3);
     }
@@ -830,7 +829,7 @@ mod tests {
             RuleMode::Sequential,
             [&rule1, &rule2]
         ));
-        let counts = fetcher.get_resource_counts().await;
+        let counts = fetcher.get_resource_counts().await.unwrap();
         assert_eq!(counts[&ResourceType::Instance], 5);
         assert_eq!(counts[&ResourceType::Bucket], 3);
     }
@@ -844,7 +843,7 @@ mod tests {
                 .build()
         });
         let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
-        let counts = fetcher.get_resource_counts_with_select().await;
+        let counts = fetcher.get_resource_counts_with_select().await.unwrap();
         assert_eq!(counts[&ResourceType::Instance], 7);
         assert_eq!(counts[&ResourceType::Bucket], 2);
     }
@@ -862,7 +861,8 @@ mod tests {
             .to_utc();
         let counts = fetcher
             .get_resource_counts_modified_since_cutoff(cutoff)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(counts[&ResourceType::Instance], 4);
     }
 
@@ -1044,7 +1044,7 @@ mod tests {
                     .build()
             });
         let fetcher = aggregate_fetcher(mock_client!(aws_sdk_config, [&rule]));
-        let counts = fetcher.get_resource_counts().await;
+        let counts = fetcher.get_resource_counts().await.unwrap();
         assert_eq!(counts[&ResourceType::Instance], 10);
         assert_eq!(counts[&ResourceType::Bucket], 6);
     }

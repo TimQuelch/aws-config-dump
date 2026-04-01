@@ -16,7 +16,7 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
-use tracing::info;
+use tracing::{error, info};
 
 use crate::db;
 use crate::schema_alterations;
@@ -93,17 +93,17 @@ async fn fetch_resources(
 ) -> anyhow::Result<(TempPath, TempPath)> {
     let config_client = DispatchingClient::new(aggregator.clone(), profile).await?;
 
-    let type_counts = config_client.get_resource_counts().await;
+    let type_counts = config_client.get_resource_counts().await?;
     let all_types: HashSet<_> = type_counts.keys().cloned().collect();
 
-    let selectable_type_counts = config_client.get_resource_counts_with_select().await;
+    let selectable_type_counts = config_client.get_resource_counts_with_select().await?;
     let selectable_types: HashSet<_> = selectable_type_counts.keys().cloned().collect();
     let unselectable_types: HashSet<_> = all_types.difference(&selectable_types).cloned().collect();
 
     let modified_type_counts = if let Some(cutoff) = cutoff {
         config_client
             .get_resource_counts_modified_since_cutoff(cutoff)
-            .await
+            .await?
     } else {
         HashMap::new()
     };
@@ -125,7 +125,7 @@ async fn fetch_resources(
                 selectable_type_counts.values().sum()
             }
             .try_into()
-            .unwrap(),
+            .expect("failed to cast to unsigned"),
         ));
         task::spawn(async move {
             c.get_resource_configs_with_select(resources_tx, cutoff, bar)
@@ -143,7 +143,7 @@ async fn fetch_resources(
                 .values()
                 .sum::<i64>()
                 .try_into()
-                .unwrap(),
+                .expect("failed to cast to unsigned"),
         ));
         task::spawn(async move {
             c.get_resource_identifiers_with_select(identifiers_tx.clone(), bar)
@@ -159,7 +159,7 @@ async fn fetch_resources(
             "fetching remaining resources",
             (type_counts.values().sum::<i64>() - selectable_type_counts.values().sum::<i64>())
                 .try_into()
-                .unwrap(),
+                .expect("failed to cast to unsigned"),
         ));
         task::spawn(async move {
             c.get_resource_configs_and_identifiers_with_batch(
@@ -173,34 +173,38 @@ async fn fetch_resources(
         });
     }
 
-    let resources_path = resources_handle.await?;
-    let identifiers_path = identifiers_handle.await?;
+    let resources_path = resources_handle.await??;
+    let identifiers_path = identifiers_handle.await??;
 
     Ok((resources_path, identifiers_path))
 }
 
-fn temp_file_writer() -> (mpsc::Sender<String>, JoinHandle<TempPath>) {
+fn temp_file_writer() -> (mpsc::Sender<String>, JoinHandle<anyhow::Result<TempPath>>) {
     let (tx, mut rx) = mpsc::channel::<String>(1024);
 
     let file_handle = task::spawn(async move {
         let (file, path) = task::spawn_blocking(|| tempfile::NamedTempFile::with_suffix(".json"))
-            .await
-            .unwrap()
-            .unwrap()
+            .await??
             .into_parts();
 
         let mut writer =
             tokio::io::BufWriter::with_capacity(128 * 1024, tokio::fs::File::from_std(file));
 
         while let Some(x) = rx.recv().await {
-            writer.write_all(x.as_bytes()).await.unwrap();
+            if let Err(error) = writer.write_all(x.as_bytes()).await {
+                error!(?path, %error, "failed to write to file");
+            }
         }
 
         // Flush both the buffered writer and the underlying file
-        writer.flush().await.unwrap();
-        writer.into_inner().flush().await.unwrap();
+        if let Err(error) = writer.flush().await {
+            error!(?path, %error, "failed to flush buffered writer");
+        }
+        if let Err(error) = writer.into_inner().flush().await {
+            error!(?path, %error, "failed to flush file");
+        }
 
-        path
+        Ok(path)
     });
 
     (tx, file_handle)

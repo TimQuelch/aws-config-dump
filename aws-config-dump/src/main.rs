@@ -7,7 +7,7 @@ use clap_complete::CompleteEnv;
 
 use cli::{Cli, Command};
 use config::{Config, ConfigFile};
-use tracing::Level;
+use tracing::{Level, error};
 
 mod build;
 mod builtin_alterations;
@@ -23,11 +23,8 @@ mod util;
 async fn main() -> anyhow::Result<()> {
     CompleteEnv::with_factory(Cli::command).complete();
 
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(Level::WARN)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    init_tracing()?;
+    init_panic();
 
     let cli = Cli::parse();
 
@@ -84,4 +81,23 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
     }
+}
+
+fn init_tracing() -> anyhow::Result<()> {
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(Level::WARN)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)?;
+    Ok(())
+}
+
+fn init_panic() {
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload_as_str().unwrap_or("NONE");
+        let location = info.location();
+        error!(payload, ?location, "panic occurred");
+        default_panic(info);
+    }));
 }
