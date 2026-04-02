@@ -1000,10 +1000,7 @@ mod tests {
 
     #[test]
     fn account_serialize_identifier() {
-        // Build a dummy rule just to construct the client — it won't be called
-        let rule = mock!(aws_sdk_config::Client::get_discovered_resource_counts)
-            .then_output(|| GetDiscoveredResourceCountsOutput::builder().build());
-        let fetcher = account_fetcher(mock_client!(aws_sdk_config, [&rule]));
+        let fetcher = account_fetcher(mock_client!(aws_sdk_config, []));
         let identifier = ResourceIdentifier::builder()
             .resource_type(ResourceType::Instance)
             .resource_id("i-123")
