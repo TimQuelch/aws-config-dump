@@ -16,7 +16,7 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::db;
 use crate::schema_alterations;
@@ -42,6 +42,7 @@ pub async fn build_database(
     let progress = MultiProgress::new();
 
     let db_pool = db::connect_to_db(&config.db_path).await?;
+    debug!(db = %config.db_path.display(), "connected to database");
 
     match fetch_source {
         FetchSource::Snapshots => {
@@ -71,7 +72,9 @@ pub async fn build_database(
             .await?;
             db::build_resources_table(&db_pool, &resources_path, &identifiers_path).await?;
         }
-        FetchSource::Skip => {}
+        FetchSource::Skip => {
+            debug!("skipping fetch, using existing data");
+        }
     }
 
     let org_accounts = if fetch_org_accounts {
@@ -79,6 +82,10 @@ pub async fn build_database(
     } else {
         None
     };
+    debug!(
+        fetched = org_accounts.is_some(),
+        "org accounts fetch complete"
+    );
 
     db::build_derived_tables(&db_pool, org_accounts, progress.clone()).await?;
     schema_alterations::apply_schema_alterations(config, &db_pool, progress).await?;
@@ -95,10 +102,19 @@ async fn fetch_resources(
 
     let type_counts = config_client.get_resource_counts().await?;
     let all_types: HashSet<_> = type_counts.keys().cloned().collect();
+    debug!(
+        total_types = all_types.len(),
+        "got total resource type counts"
+    );
 
     let selectable_type_counts = config_client.get_resource_counts_with_select().await?;
     let selectable_types: HashSet<_> = selectable_type_counts.keys().cloned().collect();
     let unselectable_types: HashSet<_> = all_types.difference(&selectable_types).cloned().collect();
+    debug!(
+        selectable = selectable_types.len(),
+        unselectable = unselectable_types.len(),
+        "computed selectable/unselectable type split"
+    );
 
     let modified_type_counts = if let Some(cutoff) = cutoff {
         config_client

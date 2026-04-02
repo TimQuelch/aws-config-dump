@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use clap_complete::{ArgValueCandidates, ArgValueCompleter};
 
 use crate::completion;
@@ -20,6 +20,10 @@ pub struct Cli {
     /// DB to use
     #[arg(short, long, global = true)]
     pub db: Option<String>,
+
+    /// Increase log verbosity (-v=info, -vv=debug, -vvv=trace)
+    #[arg(short, long, action = ArgAction::Count, global = true)]
+    pub verbose: u8,
 }
 
 #[derive(Subcommand)]

@@ -11,7 +11,7 @@ use duckdb::params;
 use indicatif::MultiProgress;
 use tempfile::{NamedTempFile, TempDir, TempPath};
 use tokio::task::{self, JoinSet};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use crate::util;
 
@@ -37,6 +37,7 @@ pub async fn connect_to_db(path: &Path) -> anyhow::Result<ConnectionPool> {
     let config = duckdb::Config::default().with("preserve_insertion_order", "false")?;
     let manager = ConnectionManager::open(Some(path), Some(config))?;
     let pool = bb8::Pool::builder().max_size(10).build(manager).await?;
+    debug!(db = %path.display(), "opened database connection pool");
     Ok(pool)
 }
 
@@ -61,7 +62,9 @@ pub async fn get_timestamp_cutoff(pool: &ConnectionPool) -> anyhow::Result<Optio
         })
         .await?;
 
-    Ok(Some(max_time_in_db - Days::new(1)))
+    let cutoff = max_time_in_db - Days::new(1);
+    debug!(%cutoff, "using timestamp cutoff");
+    Ok(Some(cutoff))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -349,6 +352,7 @@ async fn build_resource_derived_table(
 ) -> anyhow::Result<()> {
     let db = pool.get().await?;
     let table_name = util::resource_table_name(&resource_type);
+    trace!(resource_type, table_name, "building derived table");
 
     let file = task::spawn_blocking(|| {
         NamedTempFile::with_suffix(".json")

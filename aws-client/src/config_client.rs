@@ -28,7 +28,7 @@ use tokio::{
     task,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{info, warn};
+use tracing::{debug, trace, warn};
 
 use crate::sdk_config;
 
@@ -308,6 +308,10 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         } else {
             format!("{QUERY};")
         };
+        debug!(
+            has_cutoff = cutoff.is_some(),
+            "fetching resource configs with select"
+        );
 
         self.select_resource_config_call(query)
             .into_stream_03x()
@@ -345,7 +349,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                         let progress = progress.clone();
                         tokio::spawn(async move {
                             let batch_length = batch.len();
-                            info!(batch_length, "getting batch of resources");
+                            debug!(batch_length, "getting batch of resources");
 
                             let response = new_self.batch_get_resources_call(batch).await.unwrap();
 
@@ -362,6 +366,14 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                                             .map_or(true, |item_dt| item_dt > cutoff)
                                     })
                                 }) {
+                                    trace!(
+                                        resource_type = item
+                                            .resource_type
+                                            .as_ref()
+                                            .map(aws_sdk_config::types::ResourceType::as_str),
+                                        resource_id = item.resource_id.as_deref(),
+                                        "sending resource config"
+                                    );
                                     let json = item_to_json(item);
                                     file_tx.send(json.to_string()).await.unwrap();
                                 }
@@ -382,7 +394,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             let new_self = self.clone();
             tokio::spawn(async move {
                 let _permit = list_limiter.acquire().await.unwrap();
-                info!(%resource_type, "listing resource type");
+                debug!(%resource_type, "listing resource type");
                 new_self
                     .list_discovered_resources_call(resource_type)
                     .into_stream_03x()
@@ -405,6 +417,7 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         file_tx: mpsc::Sender<String>,
         progress: ProgressBar,
     ) {
+        debug!("fetching resource identifiers with select");
         self.select_resource_config_call("SELECT resourceType, accountId, resourceId;".to_string())
             .into_stream_03x()
             .try_for_each(async |resource| {

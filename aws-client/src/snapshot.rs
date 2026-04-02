@@ -14,7 +14,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufWriter},
     task::{self, JoinSet},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::sdk_config;
 
@@ -38,7 +38,7 @@ pub async fn get_snapshots(profile: Option<String>) -> anyhow::Result<TempDir> {
 
     while let Some(result) = snapshot_keys.join_next().await {
         if let Some(key) = result?? {
-            info!(key, "got snapshot key");
+            debug!(key, "got snapshot key");
             downloads.spawn(download_snapshot_object(
                 s3.clone(),
                 bucket.clone(),
@@ -67,6 +67,7 @@ async fn get_latest_snapshot_keys(
     info!(?account_prefixes, "found account prefixes");
 
     for mut prefix in account_prefixes {
+        debug!(account = %prefix, "processing account prefix");
         prefix.push_str("Config/");
         let region_prefixes = next_prefixes(&client, &bucket, prefix).await?;
         for prefix in region_prefixes {
@@ -143,6 +144,7 @@ async fn next_prefixes(
         })
         .await?;
     prefixes.sort_unstable();
+    trace!(count = prefixes.len(), "listed S3 prefixes");
     Ok(prefixes)
 }
 
@@ -215,6 +217,7 @@ async fn download_snapshot_object(
         Ok(items)
     })
     .await??;
+    debug!(key, items = items.len(), "decompressed snapshot");
 
     let filename = PathBuf::from(&key)
         .with_extension("")

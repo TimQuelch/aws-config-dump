@@ -23,10 +23,10 @@ mod util;
 async fn main() -> anyhow::Result<()> {
     CompleteEnv::with_factory(Cli::command).complete();
 
-    init_tracing()?;
-    init_panic();
-
     let cli = Cli::parse();
+
+    init_tracing(cli.verbose)?;
+    init_panic();
 
     let config = Config::load(
         ConfigFile::load(cli.config.as_deref()).await?,
@@ -83,10 +83,16 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn init_tracing() -> anyhow::Result<()> {
+fn init_tracing(verbose: u8) -> anyhow::Result<()> {
+    let level = match verbose {
+        0 => Level::WARN,
+        1 => Level::INFO,
+        2 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
     let subscriber = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_max_level(Level::WARN)
+        .with_max_level(level)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
     Ok(())
