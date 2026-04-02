@@ -56,6 +56,7 @@
               pkgs.installShellFiles
               pkgs.makeBinaryWrapper
             ];
+            doCheck = false;
             postInstall = ''
               wrapProgram $out/bin/aws-config-dump \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.duckdb ]}
