@@ -24,7 +24,7 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
             sql: r#"
                 ALTER TABLE ssm_managedinstanceinventory ADD COLUMN IF NOT EXISTS applications STRUCT(
                     ApplicationType VARCHAR,
-                    InstalledTime TIMESTAMP,
+                    InstalledTime TIMESTAMPTZ,
                     Architecture VARCHAR,
                     "Version" VARCHAR,
                     Summary VARCHAR,
@@ -48,7 +48,7 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
                     lambda x: json_transform(x, '
                         {
                             "ApplicationType": "VARCHAR",
-                            "InstalledTime": "TIMESTAMP",
+                            "InstalledTime": "TIMESTAMPTZ",
                             "Architecture": "VARCHAR",
                             "Version": "VARCHAR",
                             "Summary": "VARCHAR",
@@ -63,14 +63,31 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
                 );
 
                 ALTER TABLE ssm_managedinstanceinventory ADD COLUMN IF NOT EXISTS windowsUpdates MAP(
-                    VARCHAR, STRUCT(installedtime TIMESTAMP, description VARCHAR, hotfixid VARCHAR, installedby VARCHAR)
+                    VARCHAR, STRUCT(installedtime TIMESTAMPTZ, description VARCHAR, hotfixid VARCHAR, installedby VARCHAR)
                 );
-                UPDATE ssm_managedinstanceinventory SET windowsUpdates = map_from_entries(list_filter(
-                    map_entries(CAST(
-                        "AWS:WindowsUpdate".Content AS
-                        MAP(VARCHAR, struct(installedtime TIMESTAMP, description VARCHAR, hotfixid VARCHAR, installedby VARCHAR))
-                    )),
-                    lambda x: x.value IS NOT NULL
+                UPDATE ssm_managedinstanceinventory SET windowsUpdates = map_from_entries(list_transform(
+                    list_filter(
+                        map_entries(CAST(
+                            "AWS:WindowsUpdate".Content AS
+                            MAP(
+                                VARCHAR,
+                                STRUCT(
+                                    installedtime VARCHAR,
+                                    description VARCHAR,
+                                    hotfixid VARCHAR,
+                                    installedby VARCHAR
+                                )
+                            )
+                        )),
+                        lambda x: x.value IS NOT NULL
+                    ),
+                    lambda kv: struct_update(kv, value := struct_update(
+                        kv.value,
+                        installedtime := nullif(kv.value.installedtime, ''),
+                        description := nullif(kv.value.description, ''),
+                        hotfixid := nullif(kv.value.hotfixid, ''),
+                        installedby := nullif(kv.value.installedby, '')
+                    ))
                 ));
 
                 CREATE OR REPLACE TABLE ssm_managedinstanceinventory AS
