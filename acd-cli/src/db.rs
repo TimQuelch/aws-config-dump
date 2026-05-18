@@ -309,10 +309,14 @@ pub async fn build_derived_tables(
     .await?;
 
     db.with_conn(|c| {
-        c.execute_batch(concat!(
-            "CREATE OR REPLACE VIEW resourceTypes AS SELECT DISTINCT resourceType FROM resources;",
-            "CREATE OR REPLACE VIEW regions AS SELECT DISTINCT awsRegion FROM resources;",
-        ))
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS custom_resource_types (resource_type VARCHAR PRIMARY KEY);
+            CREATE OR REPLACE VIEW resourceTypes AS
+                SELECT DISTINCT resourceType FROM resources
+                UNION
+                SELECT resource_type FROM custom_resource_types;
+            CREATE OR REPLACE VIEW regions AS SELECT DISTINCT awsRegion FROM resources;",
+        )
     })
     .await?;
 
@@ -344,6 +348,93 @@ pub async fn build_derived_tables(
     while let Some(result) = tasks.join_next().await {
         result??;
         bar.inc(1);
+    }
+
+    Ok(())
+}
+
+pub async fn build_custom_tables(
+    pool: &ConnectionPool,
+    custom_tables: &[crate::config::CustomTable],
+    progress: MultiProgress,
+) -> anyhow::Result<()> {
+    if custom_tables.is_empty() {
+        return Ok(());
+    }
+
+    let bar = progress.add(util::progress_bar(
+        "building custom tables",
+        custom_tables.len().try_into().unwrap(),
+    ));
+
+    let db = pool.get().await?;
+    db.with_conn(|c| c.execute_batch("DELETE FROM custom_resource_types;"))
+        .await?;
+
+    let existing_tables: Vec<String> = db
+        .with_conn(|c| {
+            Ok(
+                c.prepare_cached("SELECT table_name FROM information_schema.tables;")?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .filter_map(std::result::Result::ok)
+                    .collect(),
+            )
+        })
+        .await?;
+
+    let mut tasks = JoinSet::new();
+
+    for ct in custom_tables.iter().cloned() {
+        let deps_ok = ct.dependencies.iter().all(|d| existing_tables.contains(d));
+        if !deps_ok {
+            info!(name = %ct.name, "skipping custom table: missing dependencies");
+            bar.dec_length(1);
+            continue;
+        }
+
+        let bar = bar.clone();
+        let db = pool.get_owned().await?;
+
+        tasks.spawn(async move {
+            let table_name = util::resource_table_name(&ct.name);
+            let name = ct.name.clone();
+            let sql = ct.sql.clone();
+            let desc = ct.description.as_deref().unwrap_or(&name).to_string();
+
+            let create_sql = format!(
+                "CREATE OR REPLACE TABLE \"{table_name}\" AS SELECT *, ? AS resourceType FROM ({sql});"
+            );
+
+            match db
+                .with_conn(move |c| {
+                    c.execute(&create_sql, [&name])?;
+                    c.execute(
+                        "INSERT OR REPLACE INTO custom_resource_types VALUES (?);",
+                        [&name],
+                    )
+                })
+                .await
+            {
+                Ok(_) => info!(
+                    description = desc,
+                    table = table_name,
+                    "created custom table"
+                ),
+                Err(err) => {
+                    error!(
+                        description = desc,
+                        table = table_name,
+                        %err,
+                        "failed to create custom table"
+                    );
+                }
+            }
+            bar.inc(1);
+        });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        result?;
     }
 
     Ok(())
@@ -430,4 +521,228 @@ async fn build_resource_derived_table(
         info!(resource_type, "created resource table");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::CustomTable;
+    use indicatif::MultiProgress;
+
+    async fn setup_pool() -> ConnectionPool {
+        let pool = connect_to_db_in_memory().await.unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS custom_resource_types (resource_type VARCHAR PRIMARY KEY);",
+                )
+            })
+            .await
+            .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn custom_table_created_from_sql() {
+        let pool = setup_pool().await;
+        pool.get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.execute_batch(
+                    "CREATE TABLE source (accountId VARCHAR, val INTEGER);
+                     INSERT INTO source VALUES ('123', 42);",
+                )
+            })
+            .await
+            .unwrap();
+
+        let ct = CustomTable {
+            name: "Custom::Test::Thing".to_owned(),
+            description: None,
+            dependencies: vec![],
+            sql: "SELECT accountId, val FROM source".to_owned(),
+        };
+
+        build_custom_tables(&pool, &[ct], MultiProgress::new())
+            .await
+            .unwrap();
+
+        let count: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'custom_test_thing'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn custom_table_has_injected_resource_type() {
+        let pool = setup_pool().await;
+        pool.get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.execute_batch(
+                    "CREATE TABLE source2 (accountId VARCHAR);
+                     INSERT INTO source2 VALUES ('456');",
+                )
+            })
+            .await
+            .unwrap();
+
+        let ct = CustomTable {
+            name: "Custom::Test::Widget".to_owned(),
+            description: None,
+            dependencies: vec![],
+            sql: "SELECT accountId FROM source2".to_owned(),
+        };
+
+        build_custom_tables(&pool, &[ct], MultiProgress::new())
+            .await
+            .unwrap();
+
+        let rt: String = pool
+            .get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.query_row("SELECT resourceType FROM custom_test_widget", [], |row| {
+                    row.get(0)
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(rt, "Custom::Test::Widget");
+    }
+
+    #[tokio::test]
+    async fn custom_table_skipped_when_dependency_missing() {
+        let pool = setup_pool().await;
+
+        let ct = CustomTable {
+            name: "Custom::Test::Skipped".to_owned(),
+            description: None,
+            dependencies: vec!["nonexistent_table".to_owned()],
+            sql: "SELECT 1 AS accountId".to_owned(),
+        };
+
+        build_custom_tables(&pool, &[ct], MultiProgress::new())
+            .await
+            .unwrap();
+
+        let count: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_name = 'custom_test_skipped'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn custom_resource_types_populated() {
+        let pool = setup_pool().await;
+        pool.get()
+            .await
+            .unwrap()
+            .with_conn(|c| c.execute_batch("CREATE TABLE src (accountId VARCHAR);"))
+            .await
+            .unwrap();
+
+        let ct = CustomTable {
+            name: "Custom::Test::Registered".to_owned(),
+            description: None,
+            dependencies: vec![],
+            sql: "SELECT accountId FROM src".to_owned(),
+        };
+
+        build_custom_tables(&pool, &[ct], MultiProgress::new())
+            .await
+            .unwrap();
+
+        let rt: String = pool
+            .get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT resource_type FROM custom_resource_types",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(rt, "Custom::Test::Registered");
+    }
+
+    #[tokio::test]
+    async fn custom_resource_types_cleared_on_rebuild() {
+        let pool = setup_pool().await;
+        pool.get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                c.execute_batch(
+                    "CREATE TABLE src_a (accountId VARCHAR);
+                     CREATE TABLE src_b (accountId VARCHAR);",
+                )
+            })
+            .await
+            .unwrap();
+
+        let ct_a = CustomTable {
+            name: "Custom::Test::Alpha".to_owned(),
+            description: None,
+            dependencies: vec![],
+            sql: "SELECT accountId FROM src_a".to_owned(),
+        };
+        build_custom_tables(&pool, &[ct_a], MultiProgress::new())
+            .await
+            .unwrap();
+
+        let ct_b = CustomTable {
+            name: "Custom::Test::Beta".to_owned(),
+            description: None,
+            dependencies: vec![],
+            sql: "SELECT accountId FROM src_b".to_owned(),
+        };
+        build_custom_tables(&pool, &[ct_b], MultiProgress::new())
+            .await
+            .unwrap();
+
+        let types: Vec<String> = pool
+            .get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                Ok(c.prepare(
+                    "SELECT resource_type FROM custom_resource_types ORDER BY resource_type",
+                )?
+                .query_map([], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect())
+            })
+            .await
+            .unwrap();
+        assert_eq!(types, vec!["Custom::Test::Beta"]);
+    }
 }

@@ -88,7 +88,8 @@ pub async fn build_database(
     );
 
     db::build_derived_tables(&db_pool, org_accounts, progress.clone()).await?;
-    schema_alterations::apply_schema_alterations(config, &db_pool, progress).await?;
+    schema_alterations::apply_schema_alterations(config, &db_pool, progress.clone()).await?;
+    db::build_custom_tables(&db_pool, config.custom_tables(), progress).await?;
     Ok(())
 }
 

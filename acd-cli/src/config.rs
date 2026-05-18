@@ -59,6 +59,15 @@ pub struct GlobalSchemaAlteration {
     pub sql: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct CustomTable {
+    pub name: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    pub sql: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ConfigFile {
     default_database: Option<String>,
@@ -70,6 +79,8 @@ pub struct ConfigFile {
     schema_alterations: Vec<SchemaAlteration>,
     #[serde(default)]
     global_schema_alterations: Vec<GlobalSchemaAlteration>,
+    #[serde(default)]
+    custom_tables: Vec<CustomTable>,
 }
 
 impl ConfigFile {
@@ -100,6 +111,7 @@ pub struct Config {
     pub query_extra_columns: HashMap<String, Vec<String>>,
     pub schema_alterations: Vec<SchemaAlteration>,
     pub global_schema_alterations: Vec<GlobalSchemaAlteration>,
+    pub custom_tables: Vec<CustomTable>,
 }
 
 impl Config {
@@ -110,15 +122,17 @@ impl Config {
             aggregator_name,
         } = Config::resolve_db(config_file.as_ref(), db_name)?;
 
-        let (query_extra_columns, schema_alterations, global_schema_alterations) = config_file
-            .map(|x| {
-                (
-                    x.query_extra_columns,
-                    x.schema_alterations,
-                    x.global_schema_alterations,
-                )
-            })
-            .unwrap_or_default();
+        let (query_extra_columns, schema_alterations, global_schema_alterations, custom_tables) =
+            config_file
+                .map(|x| {
+                    (
+                        x.query_extra_columns,
+                        x.schema_alterations,
+                        x.global_schema_alterations,
+                        x.custom_tables,
+                    )
+                })
+                .unwrap_or_default();
 
         Ok(Self {
             db_path: path,
@@ -127,6 +141,7 @@ impl Config {
             query_extra_columns,
             schema_alterations,
             global_schema_alterations,
+            custom_tables,
         })
     }
 
@@ -184,6 +199,10 @@ impl Config {
     pub fn global_alterations_count(&self) -> usize {
         builtin_alterations::GLOBAL_ALTERATIONS.len() + self.global_schema_alterations.len()
     }
+
+    pub fn custom_tables(&self) -> &[CustomTable] {
+        &self.custom_tables
+    }
 }
 
 fn project_dirs() -> ProjectDirs {
@@ -203,6 +222,7 @@ mod tests {
         assert!(config.query_extra_columns.is_empty());
         assert!(config.schema_alterations.is_empty());
         assert!(config.global_schema_alterations.is_empty());
+        assert!(config.custom_tables.is_empty());
     }
 
     #[test]
@@ -338,6 +358,7 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
                     sql: "SELECT 42".to_owned(),
                 }],
                 global_schema_alterations: vec![],
+                custom_tables: vec![],
             }),
             None,
         )
@@ -360,6 +381,7 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
                     description: None,
                     sql: "ALTER TABLE {table} ADD COLUMN x VARCHAR".to_owned(),
                 }],
+                custom_tables: vec![],
             }),
             None,
         )
@@ -374,5 +396,59 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
             items.last().unwrap().sql,
             "ALTER TABLE {table} ADD COLUMN x VARCHAR"
         );
+    }
+
+    #[test]
+    fn custom_table_deserializes_correctly() {
+        let toml_str = r#"
+[[custom_tables]]
+name = "Custom::EC2::Route"
+description = "Routes from route tables"
+dependencies = ["ec2_routetable"]
+sql = "SELECT accountId FROM ec2_routetable"
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.custom_tables.len(), 1);
+        let ct = &config.custom_tables[0];
+        assert_eq!(ct.name, "Custom::EC2::Route");
+        assert_eq!(ct.description.as_deref(), Some("Routes from route tables"));
+        assert_eq!(ct.dependencies, vec!["ec2_routetable"]);
+        assert_eq!(ct.sql, "SELECT accountId FROM ec2_routetable");
+    }
+
+    #[test]
+    fn custom_table_without_optional_fields_is_valid() {
+        let toml_str = r#"
+[[custom_tables]]
+name = "Custom::EC2::Route"
+sql = "SELECT 1"
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        let ct = &config.custom_tables[0];
+        assert!(ct.description.is_none());
+        assert!(ct.dependencies.is_empty());
+    }
+
+    #[test]
+    fn custom_tables_accessor_returns_config_tables() {
+        let config = Config::load(
+            Some(ConfigFile {
+                default_database: None,
+                databases: HashMap::new(),
+                query_extra_columns: HashMap::new(),
+                schema_alterations: vec![],
+                global_schema_alterations: vec![],
+                custom_tables: vec![CustomTable {
+                    name: "Custom::EC2::Route".to_owned(),
+                    description: None,
+                    dependencies: vec![],
+                    sql: "SELECT 1".to_owned(),
+                }],
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.custom_tables().len(), 1);
+        assert_eq!(config.custom_tables()[0].name, "Custom::EC2::Route");
     }
 }
