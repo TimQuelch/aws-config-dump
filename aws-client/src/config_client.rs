@@ -28,7 +28,7 @@ use tokio::{
     task,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::sdk_config;
 
@@ -614,7 +614,7 @@ fn sanitize_resource_config(mut resource: String) -> String {
     if let Some(tags) = value.get("tags")
         && !tags.is_array()
     {
-        warn!(
+        info!(
             %tags,
             resourceId = %value.get("resourceId").unwrap_or(&serde_json::Value::Null),
             arn = %value.get("arn").unwrap_or(&serde_json::Value::Null),
