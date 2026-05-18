@@ -13,6 +13,7 @@
     advisory-db.flake = false;
     jailed-claude.url = "github:TimQuelch/jailed-claude";
     jailed-claude.inputs.nixpkgs.follows = "nixpkgs";
+    llm-agents.url = "github:numtide/llm-agents.nix";
   };
 
   outputs =
@@ -24,6 +25,7 @@
       advisory-db,
       pre-commit,
       jailed-claude,
+      llm-agents,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -32,9 +34,6 @@
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
-          overlays = [
-            (final: prev: { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; })
-          ];
         };
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
@@ -111,7 +110,7 @@
                   persistHome = true;
                   wrapper = entry: "nix develop .#base -c ${entry}";
                 }).override
-                { claude-code = jailed-claude.inputs.llm-agents.packages.${system}.claude-code; }
+                { claude-code = llm-agents.packages.${system}.claude-code; }
               )
             ];
           });
