@@ -33,6 +33,9 @@ pub async fn connect_to_db_in_memory() -> anyhow::Result<ConnectionPool> {
 }
 
 pub async fn connect_to_db(path: &Path) -> anyhow::Result<ConnectionPool> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
     // setting preserve_insertion_order = false helps with read_json on very large tables
     let config = duckdb::Config::default().with("preserve_insertion_order", "false")?;
     let manager = ConnectionManager::open(Some(path), Some(config))?;
