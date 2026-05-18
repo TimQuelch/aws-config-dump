@@ -29,6 +29,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Build the offline database from AWS Config
+    #[command(visible_alias = "b")]
     Build {
         /// Use cross-account aggregated data
         #[arg(short, long)]
@@ -51,8 +52,10 @@ pub enum Command {
         fetch_org_accounts: bool,
     },
     /// Open an interactive `DuckDB` REPL against the local database
+    #[command(visible_alias = "r")]
     Repl,
     /// Query the offline database
+    #[command(visible_alias = "q")]
     Query {
         /// Filter on resource type
         #[arg(short, long, add = ArgValueCandidates::new(completion::resource_type_candidates))]
