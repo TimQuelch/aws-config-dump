@@ -187,7 +187,7 @@ impl Config {
 }
 
 fn project_dirs() -> ProjectDirs {
-    ProjectDirs::from("com", "tquelch", "aws-config-dump").expect("failed to get project dirs")
+    ProjectDirs::from("com", "tquelch", "acd").expect("failed to get project dirs")
 }
 
 #[cfg(test)]

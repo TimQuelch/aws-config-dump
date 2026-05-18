@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# aws-config-dump
+# acd
 
 CLI tool that fetches AWS Config data and stores it in a local DuckDB database.
 

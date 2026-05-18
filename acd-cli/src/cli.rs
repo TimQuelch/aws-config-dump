@@ -8,7 +8,7 @@ use clap_complete::{ArgValueCandidates, ArgValueCompleter};
 use crate::completion;
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, bin_name = "acd")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

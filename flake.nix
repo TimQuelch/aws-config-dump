@@ -47,7 +47,7 @@
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        aws-config-dump = craneLib.buildPackage (
+        acd = craneLib.buildPackage (
           commonArgs
           // {
             inherit cargoArtifacts;
@@ -57,20 +57,20 @@
             ];
             doCheck = false;
             postInstall = ''
-              wrapProgram $out/bin/aws-config-dump \
+              wrapProgram $out/bin/acd \
                   --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.duckdb ]}
 
               installShellCompletion \
-                  --cmd aws-config-dump \
-                  --bash <(PATH=$out/bin COMPLETE=bash aws-config-dump) \
-                  --zsh <(PATH=$out/bin COMPLETE=zsh aws-config-dump) \
-                  --fish <(PATH=$out/bin COMPLETE=fish aws-config-dump)
+                  --cmd acd \
+                  --bash <(PATH=$out/bin COMPLETE=bash acd) \
+                  --zsh <(PATH=$out/bin COMPLETE=zsh acd) \
+                  --fish <(PATH=$out/bin COMPLETE=fish acd)
 
               zsh_completion=$(find $out/share/zsh -type f)
 
               cat <<EOF >> $zsh_completion
-              if [ "\$funcstack[1]" = "_aws-config-dump" ]; then
-                  _clap_dynamic_completer_aws_config_dump
+              if [ "\$funcstack[1]" = "_acd" ]; then
+                  _clap_dynamic_completer_acd_cli
               fi
               EOF
             '';
@@ -92,7 +92,7 @@
         };
       in
       {
-        packages.default = aws-config-dump;
+        packages.default = acd;
         devShells = {
           # default shell includes jailed claude code. The claude code jail then calls nix develop
           # on the base shell which uses the base shell, which does not include the jailed claude.
@@ -128,9 +128,9 @@
         };
 
         checks = {
-          inherit aws-config-dump;
+          inherit acd;
         }
-        // nixpkgs.lib.mapAttrs' (k: v: nixpkgs.lib.nameValuePair "aws-config-dump-${k}" v) {
+        // nixpkgs.lib.mapAttrs' (k: v: nixpkgs.lib.nameValuePair "acd-${k}" v) {
           clippy = craneLib.cargoClippy (
             commonArgs
             // {

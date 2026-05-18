@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Tim Quelch <tim@tquelch.com>
 SPDX-License-Identifier: GPL-3.0-only
 -->
 
-# aws-config-dump
+# acd
 
 Fetches AWS Config resource data into a local [DuckDB](https://duckdb.org/) database for offline querying. AWS API results are inconsistent between services. AWS Config provides some consistent structure between different resources. By dumping everything into a local database first, you get fast, uniform SQL queries across all resource types without repeated API calls. Works with both single-account Config setups and multi-account setups with aggregators.
 
@@ -15,20 +15,20 @@ Fetches AWS Config resource data into a local [DuckDB](https://duckdb.org/) data
 Run directly without installing:
 
 ```sh
-nix run github:TimQuelch/aws-config-dump -- build
+nix run github:TimQuelch/acd -- build
 ```
 
 Or add to your NixOS/home-manager config:
 
 ```nix
-inputs.aws-config-dump.url = "github:TimQuelch/aws-config-dump";
-# then reference inputs.aws-config-dump.packages.${system}.default
+inputs.acd.url = "github:TimQuelch/acd";
+# then reference inputs.acd.packages.${system}.default
 ```
 
 ### Cargo
 
 ```sh
-cargo install --git https://github.com/TimQuelch/aws-config-dump
+cargo install --git https://github.com/TimQuelch/acd
 ```
 
 Install shell completions as described here https://docs.rs/clap_complete/latest/clap_complete/env/index.html
@@ -40,7 +40,7 @@ Install shell completions as described here https://docs.rs/clap_complete/latest
 Fetch all resources from AWS Config into a local DuckDB file:
 
 ```sh
-aws-config-dump build
+acd build
 ```
 
 Builds are incremental by default. Only resources which have been updated since the last build will be retrieved with the select query. Some resource types are not available with the select query, and instead must be retrieved every build.
@@ -55,10 +55,10 @@ Key flags:
 ### Query
 
 ```sh
-aws-config-dump query --resource-type AWS::EC2::Instance
-aws-config-dump query --resource-type AWS::EC2::Instance --fields resourceId resourceName vpcId
-aws-config-dump query --resource-type AWS::EC2::Instance --where state=running
-aws-config-dump query --resource-type AWS::EC2::Instance --query "SELECT resourceId, tags FROM input WHERE accountId = '123456789012'"
+acd query --resource-type AWS::EC2::Instance
+acd query --resource-type AWS::EC2::Instance --fields resourceId resourceName vpcId
+acd query --resource-type AWS::EC2::Instance --where state=running
+acd query --resource-type AWS::EC2::Instance --query "SELECT resourceId, tags FROM input WHERE accountId = '123456789012'"
 ```
 
 Key flags:
@@ -75,7 +75,7 @@ Key flags:
 Open an interactive DuckDB shell against the local database:
 
 ```sh
-aws-config-dump repl
+acd repl
 ```
 
 ### Global flags
@@ -86,7 +86,7 @@ aws-config-dump repl
 
 ## Configuration
 
-The config file is read from `$XDG_CONFIG_HOME/aws-config-dump/config.toml` (typically `~/.config/aws-config-dump/config.toml`).
+The config file is read from `$XDG_CONFIG_HOME/acd/config.toml` (typically `~/.config/acd/config.toml`).
 
 ```toml
 default_database = "prod"

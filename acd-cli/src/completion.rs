@@ -17,7 +17,7 @@ use crate::util;
 static PARSED_ARGS: LazyLock<ArgMatches> = LazyLock::new(|| {
     // The args of the candidate command are passed to the binary for completion.
     // In a completion context the args look like:
-    // ["aws-config-dump" "--" "aws-config-dump" ... <the rest>]
+    // ["acd" "--" "acd" ... <the rest>]
     // Skip the first two, and parse the candidate cli for completion
     Cli::command()
         .ignore_errors(true)

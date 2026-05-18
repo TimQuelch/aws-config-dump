@@ -3,11 +3,15 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
 [package]
-name = "aws-config-dump"
+name = "acd-cli"
 description.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[[bin]]
+name = "acd"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
