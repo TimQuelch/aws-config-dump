@@ -28,7 +28,7 @@ pub async fn connect_to_db_in_memory() -> anyhow::Result<ConnectionPool> {
     // setting preserve_insertion_order = false helps with read_json on very large tables
     let config = duckdb::Config::default().with("preserve_insertion_order", "false")?;
     let manager = ConnectionManager::open(None::<&Path>, Some(config))?;
-    let pool = bb8::Pool::builder().max_size(10).build(manager).await?;
+    let pool = bb8::Pool::builder().max_size(4).build(manager).await?;
     Ok(pool)
 }
 
@@ -39,7 +39,7 @@ pub async fn connect_to_db(path: &Path) -> anyhow::Result<ConnectionPool> {
     // setting preserve_insertion_order = false helps with read_json on very large tables
     let config = duckdb::Config::default().with("preserve_insertion_order", "false")?;
     let manager = ConnectionManager::open(Some(path), Some(config))?;
-    let pool = bb8::Pool::builder().max_size(10).build(manager).await?;
+    let pool = bb8::Pool::builder().max_size(4).build(manager).await?;
     debug!(db = %path.display(), "opened database connection pool");
     Ok(pool)
 }

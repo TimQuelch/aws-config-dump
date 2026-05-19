@@ -90,11 +90,13 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
                     ))
                 ));
 
+                ALTER TABLE ssm_managedinstanceinventory RENAME TO ssm_managedinstanceinventory_old;
                 CREATE OR REPLACE TABLE ssm_managedinstanceinventory AS
                     SELECT
                         * EXCLUDE("AWS:Application", "AWS:InstanceInformation", "AWS:WindowsUpdate"),
                         unnest("AWS:InstanceInformation".Content[resourceId])
-                    FROM ssm_managedinstanceinventory;"#
+                    FROM ssm_managedinstanceinventory_old;
+                DROP TABLE ssm_managedinstanceinventory_old;"#
                 .to_string(),
         },
         SchemaAlteration {
