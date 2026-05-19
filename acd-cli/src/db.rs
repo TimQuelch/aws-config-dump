@@ -214,6 +214,16 @@ pub async fn build_resources_table(
         ")
     })
     .await?;
+    info!("Fixing 'AWS::SSM::PatchCompliance' values");
+    db.with_conn(|c| {
+        c.execute_batch(r"
+            UPDATE resources
+                SET configuration = json_merge_patch(configuration, json_object('AWS:ComplianceItem', configuration->>'AWS:ComplianceItem'))
+                WHERE resourceType = 'AWS::SSM::PatchCompliance'
+                AND json_type(configuration->'AWS:ComplianceItem') = 'OBJECT';
+        ")
+    })
+    .await?;
 
     Ok(())
 }

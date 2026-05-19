@@ -104,6 +104,7 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
             dependencies: vec!["ssm_patchcompliance".to_string()],
             condition: None,
             sql: r#"
+                ALTER TABLE ssm_patchcompliance ALTER COLUMN "AWS:ComplianceItem" TYPE JSON;
                 ALTER TABLE ssm_patchcompliance ADD COLUMN IF NOT EXISTS complianceSummary STRUCT(
                     PatchBaselineId VARCHAR,
                     PatchGroup VARCHAR,
@@ -146,7 +147,7 @@ pub static ALTERATIONS: LazyLock<Vec<SchemaAlteration>> = LazyLock::new(|| {
                     list_transform(
                         list_transform(
                             list_filter(
-                                map_entries("AWS:ComplianceItem".Content.Patch),
+                                map_entries("AWS:ComplianceItem".Content.Patch::MAP(VARCHAR, JSON)),
                                 lambda kv: kv.key != 'ComplianceSummary'
                             ),
                             lambda kv: struct_update(
