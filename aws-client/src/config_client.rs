@@ -28,7 +28,7 @@ use tokio::{
     task,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::sdk_config;
 
@@ -351,7 +351,13 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                             let batch_length = batch.len();
                             debug!(batch_length, "getting batch of resources");
 
-                            let response = new_self.batch_get_resources_call(batch).await.unwrap();
+                            let response = match new_self.batch_get_resources_call(batch).await {
+                                Ok(r) => r,
+                                Err(error) => {
+                                    error!(%error, "batch get resources call failed");
+                                    return;
+                                }
+                            };
 
                             let num = response.num_unprocessed();
                             if num > 0 {
@@ -375,10 +381,13 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                                         "sending resource config"
                                     );
                                     let json = item_to_json(item);
-                                    file_tx.send(json.to_string()).await.unwrap();
+                                    if let Err(error) = file_tx.send(json.to_string()).await {
+                                        error!(%error, "failed to send resource config");
+                                        return;
+                                    }
                                 }
                             }
-                            progress.inc(batch_length.try_into().unwrap());
+                            progress.inc(batch_length as u64);
                         });
                     })
                     .await;
@@ -393,21 +402,32 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
             let list_limiter = list_limiter.clone();
             let new_self = self.clone();
             tokio::spawn(async move {
-                let _permit = list_limiter.acquire().await.unwrap();
-                debug!(%resource_type, "listing resource type");
-                new_self
+                let _permit = match list_limiter.acquire().await {
+                    Ok(p) => p,
+                    Err(error) => {
+                        error!(%error, "semaphore closed, aborting resource listing");
+                        return;
+                    }
+                };
+                let resource_type_name = resource_type.as_str().to_owned();
+                debug!(resource_type = resource_type_name, "listing resource type");
+                if let Err(error) = new_self
                     .list_discovered_resources_call(resource_type)
                     .into_stream_03x()
                     .try_for_each(async |resource_identifier| {
-                        batch_tx.send(resource_identifier.clone()).await.unwrap();
-                        identifiers_file_tx
-                            .send(new_self.serialize_identifier(resource_identifier))
-                            .await
-                            .unwrap();
+                        let serialized = new_self.serialize_identifier(resource_identifier.clone());
+                        if let Err(error) = batch_tx.send(resource_identifier).await {
+                            error!(%error, "failed to send identifier to batch channel");
+                        }
+                        if let Err(error) = identifiers_file_tx.send(serialized).await {
+                            error!(%error, "failed to send identifier to file channel");
+                        }
                         Ok(())
                     })
                     .await
-                    .unwrap();
+                {
+                    error!(%error, resource_type = resource_type_name, "error listing discovered resources");
+                }
             });
         });
     }
