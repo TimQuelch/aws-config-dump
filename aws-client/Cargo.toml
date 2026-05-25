@@ -11,11 +11,36 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-config = "1"
-aws-sdk-organizations = "1"
-aws-sdk-s3 = "1"
-aws-sdk-sts = "1"
+aws-config = { version = "1.8", features = [
+  "behavior-version-latest",
+  "test-util",
+] }
+aws-sdk-config = { version = "1.107", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+  "test-util",
+] }
+aws-sdk-organizations = { version = "1.115", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+  "test-util",
+] }
+aws-sdk-s3 = { version = "1.133", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+  "sigv4a",
+  "test-util",
+] }
+aws-sdk-sts = { version = "1.104", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+  "sigv4a",
+  "test-util",
+] }
 aws-smithy-async = "1"
 aws-smithy-types-convert = { version = "0.60", features = [
   "convert-streams",
@@ -35,10 +60,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 aws-smithy-mocks = "0.2"
-aws-sdk-config = { version = "1", features = ["test-util"] }
-aws-sdk-organizations = { version = "1", features = ["test-util"] }
-aws-sdk-s3 = { version = "1", features = ["test-util"] }
-aws-sdk-sts = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true
