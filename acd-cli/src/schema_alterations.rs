@@ -98,11 +98,7 @@ async fn apply_alterations<'a>(
                     .collect()
                     .await;
 
-                let description = alteration
-                    .description
-                    .as_deref()
-                    .unwrap_or("<unnamed>")
-                    .to_string();
+                let name = alteration.name.clone();
 
                 if let Some(condition) = alteration.condition {
                     match db
@@ -113,7 +109,7 @@ async fn apply_alterations<'a>(
                     {
                         Err(err) => {
                             error!(
-                                description,
+                                name,
                                 %err,
                                 "failed to evaluate condition for schema alteration"
                             );
@@ -121,7 +117,7 @@ async fn apply_alterations<'a>(
                             return;
                         }
                         Ok(false) => {
-                            debug!(description, "skipping schema alteration: condition not met");
+                            debug!(name, "skipping schema alteration: condition not met");
                             bar.dec_length(1);
                             return;
                         }
@@ -133,9 +129,9 @@ async fn apply_alterations<'a>(
                     .with_conn(move |c| c.execute_batch(&alteration.sql))
                     .await
                 {
-                    Ok(()) => info!(description, "applied schema alteration"),
+                    Ok(()) => info!(name, "applied schema alteration"),
                     Err(err) => error!(
-                        description,
+                        name,
                         %err,
                         "failed to apply schema alteration"
                     ),
@@ -163,12 +159,10 @@ async fn apply_global_alterations<'a>(
 ) -> anyhow::Result<()> {
     let conn = pool.get().await?;
     for alteration in alterations {
-        let description = alteration.description.as_deref().unwrap_or("<unnamed>");
+        let name = &alteration.name;
         for table in table_names {
             if let Some(condition_template) = &alteration.condition {
                 let condition_sql = condition_template.replace("{table}", table);
-                let table_owned = table.clone();
-                let desc_owned = description.to_string();
                 match conn
                     .with_conn(move |c| {
                         c.query_row(&condition_sql, [], |row| row.get::<_, bool>(0))
@@ -177,8 +171,8 @@ async fn apply_global_alterations<'a>(
                 {
                     Err(err) => {
                         error!(
-                            table = table_owned.as_str(),
-                            description = desc_owned.as_str(),
+                            table,
+                            name,
                             %err,
                             "failed to evaluate condition for global schema alteration"
                         );
@@ -187,9 +181,8 @@ async fn apply_global_alterations<'a>(
                     }
                     Ok(false) => {
                         debug!(
-                            table = table_owned.as_str(),
-                            description = desc_owned.as_str(),
-                            "skipping global schema alteration: condition not met"
+                            table,
+                            name, "skipping global schema alteration: condition not met"
                         );
                         bar.dec_length(1);
                         continue;
@@ -199,20 +192,9 @@ async fn apply_global_alterations<'a>(
             }
 
             let sql = alteration.sql.replace("{table}", table);
-            let table_owned = table.clone();
-            let desc_owned = description.to_string();
             match conn.with_conn(move |c| c.execute_batch(&sql)).await {
-                Ok(()) => info!(
-                    table = table_owned.as_str(),
-                    description = desc_owned.as_str(),
-                    "applied global schema alteration"
-                ),
-                Err(err) => error!(
-                    table = table_owned.as_str(),
-                    description = desc_owned.as_str(),
-                    %err,
-                    "failed to apply global schema alteration"
-                ),
+                Ok(()) => info!(table, name, "applied global schema alteration"),
+                Err(err) => error!(table, name, %err, "failed to apply global schema alteration"),
             }
             bar.inc(1);
         }
@@ -254,7 +236,7 @@ mod tests {
     async fn config_alteration_skipped_when_dependency_missing() {
         let pool = make_pool().await;
         let alteration = SchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             dependencies: vec!["nonexistent_table".to_string()],
             condition: None,
             sql: "ALTER TABLE nonexistent_table ADD COLUMN foo VARCHAR".to_string(),
@@ -269,7 +251,7 @@ mod tests {
         let pool = make_pool().await;
         make_table(&pool, "my_table").await;
         let alteration = SchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             dependencies: vec!["my_table".to_string()],
             condition: None,
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
@@ -300,7 +282,7 @@ mod tests {
         let conn = pool.get().await.unwrap();
         make_table(&pool, "my_table").await;
         let alteration = SchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             dependencies: vec!["my_table".to_string()],
             condition: Some("SELECT false".to_string()),
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
@@ -328,7 +310,7 @@ mod tests {
         let conn = pool.get().await.unwrap();
         make_table(&pool, "my_table").await;
         let alteration = SchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             dependencies: vec!["my_table".to_string()],
             condition: Some("SELECT true".to_string()),
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
@@ -357,7 +339,7 @@ mod tests {
         make_table(&pool, "tbl_a").await;
         make_table(&pool, "tbl_b").await;
         let alteration = GlobalSchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             condition: None,
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };
@@ -394,7 +376,7 @@ mod tests {
         let conn = pool.get().await.unwrap();
         make_table(&pool, "my_table").await;
         let alteration = SchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             dependencies: vec![],
             condition: None,
             sql: "ALTER TABLE my_table ADD COLUMN foo VARCHAR".to_string(),
@@ -422,7 +404,7 @@ mod tests {
         let conn = pool.get().await.unwrap();
         make_table(&pool, "tbl_present").await;
         let alteration = SchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             dependencies: vec!["tbl_present".to_string(), "tbl_absent".to_string()],
             condition: None,
             sql: "ALTER TABLE tbl_present ADD COLUMN foo VARCHAR".to_string(),
@@ -450,7 +432,7 @@ mod tests {
         let conn = pool.get().await.unwrap();
         make_table(&pool, "tbl_a").await;
         let alteration = GlobalSchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             condition: Some("SELECT true".to_string()),
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };
@@ -477,7 +459,7 @@ mod tests {
         let conn = pool.get().await.unwrap();
         make_table(&pool, "tbl_a").await;
         let alteration = GlobalSchemaAlteration {
-            description: None,
+            name: "test".to_string(),
             condition: Some("SELECT false".to_string()),
             sql: "ALTER TABLE {table} ADD COLUMN extra VARCHAR".to_string(),
         };

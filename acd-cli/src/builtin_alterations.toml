@@ -1,0 +1,306 @@
+# SPDX-FileCopyrightText: 2026 Tim Quelch <tim@tquelch.com>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+[[schema_alterations]]
+name = "ec2_instance_state"
+dependencies = ["ec2_instance"]
+sql = '''
+ALTER TABLE ec2_instance ALTER COLUMN state TYPE varchar USING struct_extract(state, 'name');
+ALTER TABLE ec2_instance ALTER COLUMN stateReason TYPE varchar USING struct_extract(stateReason, 'message');
+'''
+
+[[schema_alterations]]
+name = "s3_bucket"
+dependencies = ["s3_bucket"]
+sql = '''
+ALTER TABLE s3_bucket ALTER COLUMN owner TYPE VARCHAR USING struct_extract(owner, 'id');
+ALTER TABLE s3_bucket ALTER COLUMN AbacStatus TYPE VARCHAR USING struct_extract(AbacStatus, 'status');
+ALTER TABLE s3_bucket ALTER COLUMN AccessControlList TYPE JSON;
+ALTER TABLE s3_bucket ALTER COLUMN BucketPolicy TYPE JSON USING struct_extract(BucketPolicy, 'policytext');
+'''
+
+[[schema_alterations]]
+name = "vpc_endpoint_addresses"
+dependencies = ["ec2_vpcendpoint", "ec2_networkinterface"]
+sql = '''
+ALTER TABLE ec2_vpcendpoint ADD COLUMN IF NOT EXISTS privateIpAddresses VARCHAR[];
+UPDATE ec2_vpcendpoint SET privateIpAddresses = (
+    SELECT list(privateIpAddress) FROM ec2_networkinterface eni
+    WHERE list_contains(ec2_vpcendpoint.networkInterfaceIds, eni.resourceId)
+);
+'''
+
+[[schema_alterations]]
+name = "iam_roles_policies"
+dependencies = ["iam_role", "iam_user", "iam_group", "iam_policy"]
+sql = '''
+ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyDocument JSON;
+UPDATE iam_policy SET policyDocument = json(url_decode(struct_extract(list_first(
+    list_filter(policyVersionList, lambda x: x.isDefaultVersion)),
+    'document'
+)));
+
+ALTER TABLE iam_role ALTER COLUMN assumeRolePolicyDocument SET TYPE JSON
+    USING url_decode(assumeRolePolicyDocument);
+-- ALTER TABLE iam_role ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
+--     USING map_from_entries(list_transform(
+--         attachedManagedPolicies,
+--         lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
+--     ));
+
+ALTER TABLE iam_role ADD COLUMN IF NOT EXISTS inlinePolices MAP(VARCHAR, JSON);
+UPDATE iam_role SET inlinePolices =
+    map_from_entries(list_transform(
+        rolePolicyList,
+        lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
+    ));
+
+ALTER TABLE iam_user ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
+    USING map_from_entries(list_transform(
+        attachedManagedPolicies,
+        lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
+    ));
+ALTER TABLE iam_user ADD COLUMN IF NOT EXISTS inlinePolices MAP(VARCHAR, JSON);
+UPDATE iam_user SET inlinePolices =
+    map_from_entries(list_transform(
+        userPolicyList,
+        lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
+    ));
+
+ALTER TABLE iam_group ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
+    USING map_from_entries(list_transform(
+        attachedManagedPolicies,
+        lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
+    ));
+ALTER TABLE iam_group ADD COLUMN IF NOT EXISTS inlinePolices MAP(VARCHAR, JSON);
+UPDATE iam_group SET inlinePolices =
+    map_from_entries(list_transform(
+        groupPolicyList,
+        lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
+    ));
+'''
+
+[[schema_alterations]]
+name = "ssm_managedinstanceinventory"
+dependencies = ["ssm_managedinstanceinventory"]
+sql = '''
+ALTER TABLE ssm_managedinstanceinventory ADD COLUMN IF NOT EXISTS applications STRUCT(
+    ApplicationType VARCHAR,
+    InstalledTime TIMESTAMPTZ,
+    Architecture VARCHAR,
+    "Version" VARCHAR,
+    Summary VARCHAR,
+    PackageId VARCHAR,
+    Publisher VARCHAR,
+    "Release" VARCHAR,
+    URL VARCHAR,
+    "Name" VARCHAR,
+    Epoch VARCHAR
+)[];
+UPDATE ssm_managedinstanceinventory SET applications = list_transform(
+    list_concat(
+        list_filter(map_values("AWS:Application".Content), lambda x: json_type(x) == 'OBJECT'),
+        flatten(
+            list_transform(
+                list_filter(map_values("AWS:Application".Content), lambda x: json_type(x) == 'ARRAY'),
+                lambda x: x->'$[*]'
+            )
+        )
+    ),
+    lambda x: json_transform(x, '
+        {
+            "ApplicationType": "VARCHAR",
+            "InstalledTime": "TIMESTAMPTZ",
+            "Architecture": "VARCHAR",
+            "Version": "VARCHAR",
+            "Summary": "VARCHAR",
+            "PackageId": "VARCHAR",
+            "Publisher": "VARCHAR",
+            "Release": "VARCHAR",
+            "URL": "VARCHAR",
+            "Name": "VARCHAR",
+            "Epoch": "VARCHAR"
+        }'
+    )
+);
+
+ALTER TABLE ssm_managedinstanceinventory ADD COLUMN IF NOT EXISTS windowsUpdates MAP(
+    VARCHAR, STRUCT(installedtime TIMESTAMPTZ, description VARCHAR, hotfixid VARCHAR, installedby VARCHAR)
+);
+UPDATE ssm_managedinstanceinventory SET windowsUpdates = map_from_entries(list_transform(
+    list_filter(
+        map_entries(CAST(
+            "AWS:WindowsUpdate".Content AS
+            MAP(
+                VARCHAR,
+                STRUCT(
+                    installedtime VARCHAR,
+                    description VARCHAR,
+                    hotfixid VARCHAR,
+                    installedby VARCHAR
+                )
+            )
+        )),
+        lambda x: x.value IS NOT NULL
+    ),
+    lambda kv: struct_update(kv, value := struct_update(
+        kv.value,
+        installedtime := nullif(kv.value.installedtime, ''),
+        description := nullif(kv.value.description, ''),
+        hotfixid := nullif(kv.value.hotfixid, ''),
+        installedby := nullif(kv.value.installedby, '')
+    ))
+));
+
+ALTER TABLE ssm_managedinstanceinventory RENAME TO ssm_managedinstanceinventory_old;
+CREATE OR REPLACE TABLE ssm_managedinstanceinventory AS
+    SELECT
+        * EXCLUDE("AWS:Application", "AWS:InstanceInformation", "AWS:WindowsUpdate"),
+        unnest("AWS:InstanceInformation".Content[resourceId])
+    FROM ssm_managedinstanceinventory_old;
+DROP TABLE ssm_managedinstanceinventory_old;
+'''
+
+[[schema_alterations]]
+name = "ssm_patchcompliance"
+dependencies = ["ssm_patchcompliance"]
+sql = '''
+ALTER TABLE ssm_patchcompliance ALTER COLUMN "AWS:ComplianceItem" TYPE JSON;
+ALTER TABLE ssm_patchcompliance ADD COLUMN IF NOT EXISTS complianceSummary STRUCT(
+    PatchBaselineId VARCHAR,
+    PatchGroup VARCHAR,
+    Status VARCHAR,
+    OverallSeverity VARCHAR,
+    NonCompliantCriticalCount INT,
+    NonCompliantHighCount INT,
+    NonCompliantMediumCount INT,
+    NonCompliantLowCount INT,
+    NonCompliantInformationalCount INT,
+    NonCompliantUnspecifiedCount INT,
+    CompliantCriticalCount INT,
+    CompliantHighCount INT,
+    CompliantMediumCount INT,
+    CompliantLowCount INT,
+    CompliantInformationalCount INT,
+    CompliantUnspecifiedCount INT,
+    ExecutionType VARCHAR,
+    ComplianceType VARCHAR
+);
+UPDATE ssm_patchcompliance SET complianceSummary = "AWS:ComplianceItem".Content.Patch['ComplianceSummary'];
+
+ALTER TABLE ssm_patchcompliance ADD COLUMN IF NOT EXISTS patches MAP(
+    VARCHAR,
+    STRUCT(
+        Id VARCHAR,
+        Title VARCHAR,
+        Status VARCHAR,
+        InstalledTime TIMESTAMPTZ,
+        Severity VARCHAR,
+        PatchSeverity VARCHAR,
+        Classification VARCHAR,
+        PatchState VARCHAR,
+        PatchBaselineId VARCHAR,
+        PatchGroup VARCHAR,
+        CVEIds VARCHAR[]
+    )
+);
+UPDATE ssm_patchcompliance SET patches = map_from_entries(
+    list_transform(
+        list_transform(
+            list_filter(
+                map_entries("AWS:ComplianceItem".Content.Patch::MAP(VARCHAR, JSON)),
+                lambda kv: kv.key != 'ComplianceSummary'
+            ),
+            lambda kv: struct_update(
+                kv,
+                value := json_transform(
+                    kv.value::JSON,
+                    struct_pack(
+                        Id := 'VARCHAR',
+                        Title := 'VARCHAR',
+                        Status := 'VARCHAR',
+                        InstalledTime := 'TIMESTAMPTZ',
+                        Severity := 'VARCHAR',
+                        PatchSeverity := 'VARCHAR',
+                        Classification := 'VARCHAR',
+                        PatchState := 'VARCHAR',
+                        PatchBaselineId := 'VARCHAR',
+                        PatchGroup := 'VARCHAR',
+                        CVEIds := 'VARCHAR'
+                    )::JSON
+                )
+            )
+        ),
+        lambda kv: struct_update(kv, value := struct_update(
+            kv.value,
+            Title := nullif(kv.value.Title, ''),
+            Status := nullif(kv.value.Status, ''),
+            PatchSeverity := nullif(kv.value.PatchSeverity, ''),
+            Classification := nullif(kv.value.Classification, ''),
+            PatchGroup := nullif(kv.value.PatchGroup, ''),
+            CVEIds := split(kv.value.CVEIds, ',')
+        ))
+    )
+);
+ALTER TABLE ssm_patchcompliance DROP COLUMN "AWS:ComplianceItem";
+UPDATE ssm_patchcompliance SET resourceId = resourceId[36:]
+'''
+
+[[schema_alterations]]
+name = "sns_topic"
+dependencies = ["sns_topic"]
+sql = '''
+ALTER TABLE sns_topic ALTER COLUMN Policy TYPE JSON;
+ALTER TABLE sns_topic DROP COLUMN TopicArn;
+ALTER TABLE sns_topic DROP COLUMN Tags_1;
+ALTER TABLE sns_topic ALTER COLUMN EffectiveDeliveryPolicy TYPE STRUCT(
+    http STRUCT(
+        defaultHealthyRetryPolicy STRUCT(
+            minDelayTarget INT,
+            maxDelayTarget INT,
+            numRetries INT,
+            numMaxDelayRetries INT,
+            numNoDelayRetries INT,
+            numMinDelayRetries INT,
+            backoffFunction VARCHAR
+        ),
+        disableSubscriptionOverrides BOOLEAN,
+        defaultRequestPolicy STRUCT(
+            headerContentType VARCHAR
+        )
+    )
+);
+'''
+
+[[schema_alterations]]
+name = "organizations_policy"
+dependencies = ["organizations_policy"]
+sql = '''
+ALTER TABLE organizations_policy ALTER COLUMN Content TYPE JSON;
+'''
+
+[[global_schema_alterations]]
+name = "name_from_tags"
+condition = '''SELECT count(*) > 0 FROM "{table}" WHERE tags['Name'] IS NOT NULL'''
+sql = '''
+ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS tagName VARCHAR;
+UPDATE "{table}" SET tagName = tags['Name'];
+UPDATE "{table}" SET resourceName = coalesce(resourceName, tagName);
+'''
+
+[[global_schema_alterations]]
+name = "drop_tags_1"
+condition = '''
+SELECT count(*) > 0 FROM information_schema.columns
+WHERE table_name = '{table}' AND lower(column_name) == 'tags_1'
+'''
+sql = '''ALTER TABLE "{table}" DROP COLUMN tags_1;'''
+
+[[global_schema_alterations]]
+name = "drop_arn_1"
+condition = '''
+SELECT count(*) > 0 FROM information_schema.columns
+WHERE table_name = '{table}' AND lower(column_name) == 'arn_1'
+'''
+sql = '''ALTER TABLE "{table}" DROP COLUMN arn_1;'''

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
@@ -45,7 +45,7 @@ impl DbConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct SchemaAlteration {
-    pub description: Option<String>,
+    pub name: String,
     #[serde(default)]
     pub dependencies: Vec<String>,
     pub condition: Option<String>,
@@ -54,9 +54,17 @@ pub struct SchemaAlteration {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct GlobalSchemaAlteration {
-    pub description: Option<String>,
+    pub name: String,
     pub condition: Option<String>,
     pub sql: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct BuiltinAlterationsConfig {
+    #[serde(default)]
+    pub disable_all: bool,
+    #[serde(default)]
+    pub disabled: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -81,6 +89,8 @@ pub struct ConfigFile {
     global_schema_alterations: Vec<GlobalSchemaAlteration>,
     #[serde(default)]
     custom_tables: Vec<CustomTable>,
+    #[serde(default)]
+    builtin_alterations: BuiltinAlterationsConfig,
 }
 
 impl ConfigFile {
@@ -112,6 +122,7 @@ pub struct Config {
     pub schema_alterations: Vec<SchemaAlteration>,
     pub global_schema_alterations: Vec<GlobalSchemaAlteration>,
     pub custom_tables: Vec<CustomTable>,
+    builtin_filter: BuiltinAlterationsConfig,
 }
 
 impl Config {
@@ -122,17 +133,23 @@ impl Config {
             aggregator_name,
         } = Config::resolve_db(config_file.as_ref(), db_name)?;
 
-        let (query_extra_columns, schema_alterations, global_schema_alterations, custom_tables) =
-            config_file
-                .map(|x| {
-                    (
-                        x.query_extra_columns,
-                        x.schema_alterations,
-                        x.global_schema_alterations,
-                        x.custom_tables,
-                    )
-                })
-                .unwrap_or_default();
+        let (
+            query_extra_columns,
+            schema_alterations,
+            global_schema_alterations,
+            custom_tables,
+            builtin_filter,
+        ) = config_file
+            .map(|x| {
+                (
+                    x.query_extra_columns,
+                    x.schema_alterations,
+                    x.global_schema_alterations,
+                    x.custom_tables,
+                    x.builtin_alterations,
+                )
+            })
+            .unwrap_or_default();
 
         Ok(Self {
             db_path: path,
@@ -142,6 +159,7 @@ impl Config {
             schema_alterations,
             global_schema_alterations,
             custom_tables,
+            builtin_filter,
         })
     }
 
@@ -181,23 +199,51 @@ impl Config {
     }
 
     pub fn alterations(&self) -> impl IntoIterator<Item = &SchemaAlteration> {
-        builtin_alterations::ALTERATIONS
+        let builtins: &[SchemaAlteration] = if self.builtin_filter.disable_all {
+            &[]
+        } else {
+            builtin_alterations::alterations()
+        };
+        builtins
             .iter()
+            .filter(|a| !self.builtin_filter.disabled.contains(&a.name))
             .chain(&self.schema_alterations)
     }
 
     pub fn alterations_count(&self) -> usize {
-        builtin_alterations::ALTERATIONS.len() + self.schema_alterations.len()
+        let builtin_count = if self.builtin_filter.disable_all {
+            0
+        } else {
+            builtin_alterations::alterations()
+                .iter()
+                .filter(|a| !self.builtin_filter.disabled.contains(&a.name))
+                .count()
+        };
+        builtin_count + self.schema_alterations.len()
     }
 
     pub fn global_alterations(&self) -> impl IntoIterator<Item = &GlobalSchemaAlteration> {
-        builtin_alterations::GLOBAL_ALTERATIONS
+        let builtins: &[GlobalSchemaAlteration] = if self.builtin_filter.disable_all {
+            &[]
+        } else {
+            builtin_alterations::global_alterations()
+        };
+        builtins
             .iter()
+            .filter(|a| !self.builtin_filter.disabled.contains(&a.name))
             .chain(&self.global_schema_alterations)
     }
 
     pub fn global_alterations_count(&self) -> usize {
-        builtin_alterations::GLOBAL_ALTERATIONS.len() + self.global_schema_alterations.len()
+        let builtin_count = if self.builtin_filter.disable_all {
+            0
+        } else {
+            builtin_alterations::global_alterations()
+                .iter()
+                .filter(|a| !self.builtin_filter.disabled.contains(&a.name))
+                .count()
+        };
+        builtin_count + self.global_schema_alterations.len()
     }
 
     pub fn custom_tables(&self) -> &[CustomTable] {
@@ -223,6 +269,8 @@ mod tests {
         assert!(config.schema_alterations.is_empty());
         assert!(config.global_schema_alterations.is_empty());
         assert!(config.custom_tables.is_empty());
+        assert!(!config.builtin_alterations.disable_all);
+        assert!(config.builtin_alterations.disabled.is_empty());
     }
 
     #[test]
@@ -241,13 +289,13 @@ aws_profile = "some_profile"
 ec2_vpc = ["tags['Name']", "cidrBlock"]
 
 [[schema_alterations]]
-description = "Add custom field"
+name = "custom_field"
 dependencies = ["ec2_instance"]
 condition = "SELECT true"
 sql = "ALTER TABLE ec2_instance ADD COLUMN foo VARCHAR"
 
 [[global_schema_alterations]]
-description = "Global field"
+name = "global_field"
 condition = 'SELECT count(*) > 0 FROM "{table}"'
 sql = 'ALTER TABLE "{table}" ADD COLUMN bar VARCHAR'
 "#;
@@ -279,24 +327,25 @@ sql = 'ALTER TABLE "{table}" ADD COLUMN bar VARCHAR'
             vec!["tags['Name']", "cidrBlock"]
         );
         let sa = &config.schema_alterations[0];
-        assert_eq!(sa.description.as_deref(), Some("Add custom field"));
+        assert_eq!(sa.name, "custom_field");
         assert_eq!(sa.dependencies, vec!["ec2_instance"]);
         assert_eq!(sa.condition.as_deref(), Some("SELECT true"));
         let ga = &config.global_schema_alterations[0];
-        assert_eq!(ga.description.as_deref(), Some("Global field"));
+        assert_eq!(ga.name, "global_field");
         assert!(ga.condition.is_some());
     }
 
     #[test]
-    fn alteration_without_description_and_condition_is_valid() {
+    fn alteration_without_condition_is_valid() {
         let toml_str = r#"
 [[schema_alterations]]
+name = "test"
 dependencies = []
 sql = "SELECT 1"
 "#;
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
         let sa = &config.schema_alterations[0];
-        assert!(sa.description.is_none());
+        assert_eq!(sa.name, "test");
         assert!(sa.condition.is_none());
         assert_eq!(sa.sql, "SELECT 1");
     }
@@ -305,6 +354,7 @@ sql = "SELECT 1"
     fn table_placeholder_preserved_in_global_sql() {
         let toml_str = r#"
 [[global_schema_alterations]]
+name = "test"
 sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
 "#;
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
@@ -352,19 +402,20 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
                 databases: HashMap::new(),
                 query_extra_columns: HashMap::new(),
                 schema_alterations: vec![SchemaAlteration {
+                    name: "test".to_string(),
                     dependencies: vec![],
                     condition: None,
-                    description: None,
                     sql: "SELECT 42".to_owned(),
                 }],
                 global_schema_alterations: vec![],
                 custom_tables: vec![],
+                builtin_alterations: BuiltinAlterationsConfig::default(),
             }),
             None,
         )
         .unwrap();
         let items: Vec<_> = config.alterations().into_iter().collect();
-        assert_eq!(items.len(), builtin_alterations::ALTERATIONS.len() + 1);
+        assert_eq!(items.len(), builtin_alterations::alterations().len() + 1);
         assert_eq!(items.last().unwrap().sql, "SELECT 42");
     }
 
@@ -377,11 +428,12 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
                 query_extra_columns: HashMap::new(),
                 schema_alterations: vec![],
                 global_schema_alterations: vec![GlobalSchemaAlteration {
+                    name: "test".to_string(),
                     condition: None,
-                    description: None,
                     sql: "ALTER TABLE {table} ADD COLUMN x VARCHAR".to_owned(),
                 }],
                 custom_tables: vec![],
+                builtin_alterations: BuiltinAlterationsConfig::default(),
             }),
             None,
         )
@@ -390,7 +442,7 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
         let items: Vec<_> = config.global_alterations().into_iter().collect();
         assert_eq!(
             items.len(),
-            builtin_alterations::GLOBAL_ALTERATIONS.len() + 1
+            builtin_alterations::global_alterations().len() + 1
         );
         assert_eq!(
             items.last().unwrap().sql,
@@ -430,6 +482,108 @@ sql = "SELECT 1"
     }
 
     #[test]
+    fn disable_all_builtins_suppresses_all_builtin_alterations() {
+        let config = Config::load(
+            Some(ConfigFile {
+                default_database: None,
+                databases: HashMap::new(),
+                query_extra_columns: HashMap::new(),
+                schema_alterations: vec![],
+                global_schema_alterations: vec![],
+                custom_tables: vec![],
+                builtin_alterations: BuiltinAlterationsConfig {
+                    disable_all: true,
+                    disabled: [].into(),
+                },
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.alterations().into_iter().count(), 0);
+        assert_eq!(config.global_alterations().into_iter().count(), 0);
+    }
+
+    #[test]
+    fn disabled_list_suppresses_named_builtin() {
+        let config = Config::load(
+            Some(ConfigFile {
+                default_database: None,
+                databases: HashMap::new(),
+                query_extra_columns: HashMap::new(),
+                schema_alterations: vec![],
+                global_schema_alterations: vec![],
+                custom_tables: vec![],
+                builtin_alterations: BuiltinAlterationsConfig {
+                    disable_all: false,
+                    disabled: ["ssm_patchcompliance".to_owned()].into(),
+                },
+            }),
+            None,
+        )
+        .unwrap();
+        let names: Vec<&str> = config
+            .alterations()
+            .into_iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(!names.contains(&"ssm_patchcompliance"));
+        assert!(names.contains(&"ec2_instance_state"));
+    }
+
+    #[test]
+    fn disable_all_does_not_suppress_user_alterations() {
+        let config = Config::load(
+            Some(ConfigFile {
+                default_database: None,
+                databases: HashMap::new(),
+                query_extra_columns: HashMap::new(),
+                schema_alterations: vec![SchemaAlteration {
+                    name: "my_custom".to_string(),
+                    dependencies: vec![],
+                    condition: None,
+                    sql: "SELECT 1".to_owned(),
+                }],
+                global_schema_alterations: vec![],
+                custom_tables: vec![],
+                builtin_alterations: BuiltinAlterationsConfig {
+                    disable_all: true,
+                    disabled: [].into(),
+                },
+            }),
+            None,
+        )
+        .unwrap();
+        let names: Vec<&str> = config
+            .alterations()
+            .into_iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["my_custom"]);
+    }
+
+    #[test]
+    fn empty_toml_builtin_alterations_section_defaults_to_all_enabled() {
+        let config: ConfigFile = toml::from_str("").unwrap();
+        assert!(!config.builtin_alterations.disable_all);
+        assert!(config.builtin_alterations.disabled.is_empty());
+    }
+
+    #[test]
+    fn builtin_alterations_config_deserializes_from_toml() {
+        let toml_str = r#"
+[builtin_alterations]
+disable_all = true
+disabled = ["ssm_patchcompliance", "sns_topic"]
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(config.builtin_alterations.disable_all);
+        assert_eq!(
+            config.builtin_alterations.disabled,
+            ["ssm_patchcompliance".to_owned(), "sns_topic".to_owned()].into()
+        );
+    }
+
+    #[test]
     fn custom_tables_accessor_returns_config_tables() {
         let config = Config::load(
             Some(ConfigFile {
@@ -444,6 +598,7 @@ sql = "SELECT 1"
                     dependencies: vec![],
                     sql: "SELECT 1".to_owned(),
                 }],
+                builtin_alterations: BuiltinAlterationsConfig::default(),
             }),
             None,
         )

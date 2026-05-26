@@ -748,7 +748,7 @@ mod tests {
                     "SELECT resource_type FROM custom_resource_types ORDER BY resource_type",
                 )?
                 .query_map([], |row| row.get(0))?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect())
             })
             .await
