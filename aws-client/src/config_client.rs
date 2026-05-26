@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{collections::HashMap, convert::Into, error::Error, sync::Arc};
+use std::{collections::HashMap, convert::Into, error::Error};
 
 use anyhow::anyhow;
 use aws_sdk_config::{
@@ -20,13 +20,10 @@ use aws_sdk_config::{
 use aws_smithy_async::future::pagination_stream::PaginationStream;
 use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
 use chrono::{DateTime, Utc};
-use futures::stream::{StreamExt, TryStreamExt};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use indicatif::ProgressBar;
 use serde::{self, Deserialize, Serialize, ser::SerializeStruct};
-use tokio::{
-    sync::{Semaphore, mpsc},
-    task,
-};
+use tokio::{sync::mpsc, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, trace, warn};
 
@@ -338,84 +335,20 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         // single batch is 100
         let (batch_tx, batch_rx) = mpsc::channel::<C::Identifier>(256);
 
-        {
-            let new_self = self.clone();
-            tokio::spawn(async move {
-                ReceiverStream::new(batch_rx)
-                    .chunks(100)
-                    .for_each(async |batch| {
-                        let file_tx = configs_file_tx.clone();
-                        let new_self = new_self.clone();
-                        let progress = progress.clone();
-                        tokio::spawn(async move {
-                            let batch_length = batch.len();
-                            debug!(batch_length, "getting batch of resources");
-
-                            let response = match new_self.batch_get_resources_call(batch).await {
-                                Ok(r) => r,
-                                Err(error) => {
-                                    error!(%error, "batch get resources call failed");
-                                    return;
-                                }
-                            };
-
-                            let num = response.num_unprocessed();
-                            if num > 0 {
-                                warn!(num, "unprocessed items in batch response");
-                            }
-
-                            for item in response.into_items() {
-                                if cutoff.is_none_or(|cutoff| {
-                                    item.configuration_item_capture_time.is_some_and(|item_dt| {
-                                        item_dt
-                                            .to_chrono_utc()
-                                            .map_or(true, |item_dt| item_dt > cutoff)
-                                    })
-                                }) {
-                                    trace!(
-                                        resource_type = item
-                                            .resource_type
-                                            .as_ref()
-                                            .map(aws_sdk_config::types::ResourceType::as_str),
-                                        resource_id = item.resource_id.as_deref(),
-                                        "sending resource config"
-                                    );
-                                    let json = item_to_json(item);
-                                    if let Err(error) = file_tx.send(json.to_string()).await {
-                                        error!(%error, "failed to send resource config");
-                                        return;
-                                    }
-                                }
-                            }
-                            progress.inc(batch_length as u64);
-                        });
-                    })
-                    .await;
-            });
-        }
-
-        let list_limiter = Arc::new(Semaphore::new(8));
-
-        resource_types.for_each(|resource_type| {
+        let inner_client = self.clone();
+        let list_fut = stream::iter(resource_types).for_each_concurrent(8, move |resource_type| {
             let batch_tx = batch_tx.clone();
             let identifiers_file_tx = identifiers_file_tx.clone();
-            let list_limiter = list_limiter.clone();
-            let new_self = self.clone();
-            tokio::spawn(async move {
-                let _permit = match list_limiter.acquire().await {
-                    Ok(p) => p,
-                    Err(error) => {
-                        error!(%error, "semaphore closed, aborting resource listing");
-                        return;
-                    }
-                };
+            let inner_client = inner_client.clone();
+            async move {
                 let resource_type_name = resource_type.as_str().to_owned();
                 debug!(resource_type = resource_type_name, "listing resource type");
-                if let Err(error) = new_self
+                if let Err(error) = inner_client
                     .list_discovered_resources_call(resource_type)
                     .into_stream_03x()
                     .try_for_each(async |resource_identifier| {
-                        let serialized = new_self.serialize_identifier(resource_identifier.clone());
+                        let serialized =
+                            inner_client.serialize_identifier(resource_identifier.clone());
                         if let Err(error) = batch_tx.send(resource_identifier).await {
                             error!(%error, "failed to send identifier to batch channel");
                         }
@@ -426,10 +359,67 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
                     })
                     .await
                 {
-                    error!(%error, resource_type = resource_type_name, "error listing discovered resources");
+                    error!(
+                        %error,
+                        resource_type = resource_type_name,
+                        "error listing discovered resources"
+                    );
+                }
+            }
+        });
+
+        let inner_client = self.clone();
+        let get_fut = ReceiverStream::new(batch_rx)
+            .chunks(100)
+            .for_each_concurrent(None, move |batch| {
+                let file_tx = configs_file_tx.clone();
+                let inner_client = inner_client.clone();
+                let progress = progress.clone();
+                async move {
+                    let batch_length = batch.len();
+                    debug!(batch_length, "getting batch of resources");
+
+                    let response = match inner_client.batch_get_resources_call(batch).await {
+                        Ok(r) => r,
+                        Err(error) => {
+                            error!(%error, "batch get resources call failed");
+                            return;
+                        }
+                    };
+
+                    let num = response.num_unprocessed();
+                    if num > 0 {
+                        warn!(num, "unprocessed items in batch response");
+                    }
+
+                    for item in response.into_items() {
+                        if cutoff.is_none_or(|cutoff| {
+                            item.configuration_item_capture_time.is_some_and(|item_dt| {
+                                item_dt
+                                    .to_chrono_utc()
+                                    .map_or(true, |item_dt| item_dt > cutoff)
+                            })
+                        }) {
+                            trace!(
+                                resource_type = item
+                                    .resource_type
+                                    .as_ref()
+                                    .map(aws_sdk_config::types::ResourceType::as_str),
+                                resource_id = item.resource_id.as_deref(),
+                                "sending resource config"
+                            );
+                            let json = item_to_json(item);
+                            if let Err(error) = file_tx.send(json.to_string()).await {
+                                error!(%error, "failed to send resource config");
+                                return;
+                            }
+                        }
+                    }
+                    progress.inc(batch_length as u64);
                 }
             });
-        });
+
+        tokio::join!(list_fut, get_fut);
     }
 
     async fn get_resource_identifiers_with_select(
