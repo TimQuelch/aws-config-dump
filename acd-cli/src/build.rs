@@ -174,7 +174,12 @@ async fn fetch_resources(
         let c = config_client.clone();
         let bar = progress.add(util::progress_bar(
             "fetching remaining resources",
-            (type_counts.values().sum::<i64>() - selectable_type_counts.values().sum::<i64>())
+            type_counts
+                .iter()
+                .filter_map(|(resource_type, count)| {
+                    unselectable_types.contains(resource_type).then_some(count)
+                })
+                .sum::<i64>()
                 .try_into()
                 .expect("failed to cast to unsigned"),
         ));
