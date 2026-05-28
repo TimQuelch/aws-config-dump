@@ -66,6 +66,9 @@ pub enum Command {
         /// Select fields
         #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
         fields: Option<Vec<String>>,
+        /// Exclude fields from the query
+        #[arg(short = 'x', long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
+        exclude_fields: Option<Vec<String>>,
         /// Include all fields
         #[arg(short = 'F', long)]
         all_fields: bool,
