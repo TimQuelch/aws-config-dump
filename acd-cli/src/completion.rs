@@ -81,11 +81,13 @@ pub fn field_candidates() -> Vec<clap_complete::CompletionCandidate> {
         .map_or_else(|| "resources".to_string(), util::resource_table_name);
 
     query_results_candidates(
-            format!(
-                "FROM information_schema.columns SELECT column_name, data_type WHERE table_name = '{table}';"
-            )
-            .as_str(),
+        format!(
+            "FROM information_schema.columns SELECT column_name, data_type
+                 WHERE table_name = '{table}'
+                 UNION SELECT 'accountName', 'VARCHAR';"
         )
+        .as_str(),
+    )
 }
 
 pub fn where_clause_completer(
