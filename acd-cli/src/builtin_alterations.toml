@@ -43,11 +43,11 @@ UPDATE iam_policy SET policyDocument = json(url_decode(struct_extract(list_first
 
 ALTER TABLE iam_role ALTER COLUMN assumeRolePolicyDocument SET TYPE JSON
     USING url_decode(assumeRolePolicyDocument);
--- ALTER TABLE iam_role ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
---     USING map_from_entries(list_transform(
---         attachedManagedPolicies,
---         lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
---     ));
+ALTER TABLE iam_role ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
+    USING map_from_entries(list_transform(
+        attachedManagedPolicies,
+        lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
+    ));
 
 ALTER TABLE iam_role ADD COLUMN IF NOT EXISTS inlinePolices MAP(VARCHAR, JSON);
 UPDATE iam_role SET inlinePolices =
@@ -55,6 +55,20 @@ UPDATE iam_role SET inlinePolices =
         rolePolicyList,
         lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
     ));
+
+ALTER TABLE iam_role ADD COLUMN effectivePolicyStatements JSON[];
+UPDATE iam_role SET effectivePolicyStatements = (
+    SELECT list_distinct(flatten(list_concat(
+        list(p.policyDocument.Statement::json[]),
+        list_transform(map_values(iam_role.inlinePolices), lambda x: x.Statement::json[])
+    )))
+    FROM (
+        SELECT unnest(map_values(inner_iam_role.attachedManagedPolicies)) AS policy_arn
+        FROM iam_role inner_iam_role
+        WHERE inner_iam_role.arn = iam_role.arn
+    ) AS attached
+    JOIN iam_policy p ON p.arn = attached.policy_arn
+);
 
 ALTER TABLE iam_user ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
     USING map_from_entries(list_transform(
