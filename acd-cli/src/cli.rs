@@ -78,6 +78,12 @@ pub enum Command {
         /// Where clause in arbitrary format
         #[arg(short = 'W', long, num_args(1..))]
         where_raw: Option<Vec<String>>,
+        /// Sort output by fields
+        #[arg(short = 's', long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
+        sort: Option<Vec<String>>,
+        /// Reverse sort order (descending)
+        #[arg(long)]
+        reverse: bool,
         /// Query
         #[arg(short, long, default_value = "SELECT * FROM input")]
         query: String,

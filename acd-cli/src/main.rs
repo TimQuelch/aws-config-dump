@@ -68,6 +68,8 @@ async fn main() -> anyhow::Result<()> {
             where_raw,
             query,
             exclude_fields,
+            sort,
+            reverse,
         } => {
             query::query(
                 &config,
@@ -80,6 +82,8 @@ async fn main() -> anyhow::Result<()> {
                     where_raw_clauses: where_raw,
                     exclude_fields,
                     query,
+                    sort,
+                    reverse,
                 },
             )
             .await

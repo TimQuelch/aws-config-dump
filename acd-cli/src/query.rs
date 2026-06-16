@@ -23,6 +23,8 @@ pub struct QueryParams {
     pub where_raw_clauses: Option<Vec<String>>,
     pub exclude_fields: Option<Vec<String>>,
     pub query: String,
+    pub sort: Option<Vec<String>>,
+    pub reverse: bool,
 }
 
 fn build_account_clause(accounts: &[String]) -> String {
@@ -51,6 +53,21 @@ fn build_where_raw_clause(clauses: &[String]) -> String {
     })
 }
 
+fn build_order_by_clause(fields: &[String], reverse: bool) -> String {
+    if fields.is_empty() {
+        return String::new();
+    }
+    let first = fields.first().expect("already checked not-empty");
+    let direction = if reverse { " DESC" } else { "" };
+    fields
+        .iter()
+        .skip(1)
+        .fold(format!("ORDER BY {first}{direction}"), |mut acc, f| {
+            write!(acc, ", {f}{direction}").expect("write to String cannot fail");
+            acc
+        })
+}
+
 fn build_query(
     params: QueryParams,
     has_account_name: bool,
@@ -77,6 +94,7 @@ fn build_query(
     let account_clause = build_account_clause(&params.accounts.unwrap_or_default());
     let where_clauses = build_where_clause(&params.where_clauses.unwrap_or_default());
     let where_raw_clauses = build_where_raw_clause(&params.where_raw_clauses.unwrap_or_default());
+    let order_by_clause = build_order_by_clause(&params.sort.unwrap_or_default(), params.reverse);
     format!(
         "CREATE OR REPLACE TEMPORARY VIEW input AS
             SELECT {columns} FROM query_table('{table}')
@@ -84,7 +102,8 @@ fn build_query(
             WHERE true
             {account_clause}
             {where_clauses}
-            {where_raw_clauses};
+            {where_raw_clauses}
+            {order_by_clause};
         {user_query};",
         user_query = params.query,
     )
@@ -225,6 +244,8 @@ mod tests {
             where_raw_clauses: None,
             exclude_fields: Some(vec![]),
             query: "SELECT * FROM input".to_string(),
+            sort: None,
+            reverse: false,
         }
     }
 
@@ -704,5 +725,109 @@ mod tests {
             &HashMap::new(),
         );
         assert_eq!(with_empty, without);
+    }
+
+    #[test]
+    fn order_by_empty_is_empty() {
+        assert!(build_order_by_clause(&[], false).is_empty());
+    }
+
+    #[test]
+    fn order_by_single_field() {
+        assert_eq!(
+            build_order_by_clause(&["resourceName".to_string()], false),
+            "ORDER BY resourceName"
+        );
+    }
+
+    #[test]
+    fn order_by_multiple_fields() {
+        assert_eq!(
+            build_order_by_clause(
+                &["resourceName".to_string(), "awsRegion".to_string()],
+                false
+            ),
+            "ORDER BY resourceName, awsRegion"
+        );
+    }
+
+    #[test]
+    fn order_by_single_field_reversed() {
+        assert_eq!(
+            build_order_by_clause(&["resourceName".to_string()], true),
+            "ORDER BY resourceName DESC"
+        );
+    }
+
+    #[test]
+    fn order_by_multiple_fields_reversed() {
+        assert_eq!(
+            build_order_by_clause(&["resourceName".to_string(), "awsRegion".to_string()], true),
+            "ORDER BY resourceName DESC, awsRegion DESC"
+        );
+    }
+
+    #[test]
+    fn order_by_reverse_with_empty_fields_is_empty() {
+        assert!(build_order_by_clause(&[], true).is_empty());
+    }
+
+    #[test]
+    fn sort_fields_adds_order_by() {
+        let q = build_query(
+            QueryParams {
+                sort: Some(vec!["resourceName".to_string()]),
+                ..default_params()
+            },
+            false,
+            &HashMap::new(),
+        );
+        assert!(q.contains("ORDER BY resourceName"));
+    }
+
+    #[test]
+    fn sort_multiple_fields_order_preserved() {
+        let q = build_query(
+            QueryParams {
+                sort: Some(vec!["awsRegion".to_string(), "resourceName".to_string()]),
+                ..default_params()
+            },
+            false,
+            &HashMap::new(),
+        );
+        assert!(q.contains("ORDER BY awsRegion, resourceName"));
+    }
+
+    #[test]
+    fn sort_with_reverse_adds_desc() {
+        let q = build_query(
+            QueryParams {
+                sort: Some(vec!["resourceName".to_string()]),
+                reverse: true,
+                ..default_params()
+            },
+            false,
+            &HashMap::new(),
+        );
+        assert!(q.contains("ORDER BY resourceName DESC"));
+    }
+
+    #[test]
+    fn no_sort_fields_no_order_by() {
+        let q = build_query(default_params(), false, &HashMap::new());
+        assert!(!q.contains("ORDER BY"));
+    }
+
+    #[test]
+    fn reverse_without_sort_fields_no_order_by() {
+        let q = build_query(
+            QueryParams {
+                reverse: true,
+                ..default_params()
+            },
+            false,
+            &HashMap::new(),
+        );
+        assert!(!q.contains("ORDER BY"));
     }
 }
