@@ -21,6 +21,12 @@ aws-sdk-config = { version = "1.107", default-features = false, features = [
   "rt-tokio",
   "test-util",
 ] }
+aws-sdk-iam = { version = "1.113", default-features = false, features = [
+  "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
+  "test-util",
+] }
 aws-sdk-organizations = { version = "1.115", default-features = false, features = [
   "behavior-version-latest",
   "default-https-client",

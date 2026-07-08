@@ -44,6 +44,37 @@ pub async fn build_database(
     let db_pool = db::connect_to_db(&config.db_path).await?;
     debug!(db = %config.db_path.display(), "connected to database");
 
+    let org_accounts_handle = {
+        let aws_profile = config.aws_profile.clone();
+        task::spawn(async move {
+            if fetch_org_accounts {
+                Some(org_client::fetch_org_accounts(aws_profile).await)
+            } else {
+                None
+            }
+        })
+    };
+
+    let managed_policy_handle = {
+        let aws_profile = config.aws_profile.clone();
+        let progress = progress.clone();
+        let db_pool = db_pool.clone();
+        task::spawn(async move {
+            let all_policies =
+                aws_client::iam_client::list_aws_managed_policies(aws_profile.clone())
+                    .await
+                    .inspect_err(|e| error!(%e, "failed to list AWS managed policies"))
+                    .unwrap_or_default();
+            db::build_aws_managed_policies_table(
+                &db_pool,
+                all_policies,
+                aws_profile,
+                progress.clone(),
+            )
+            .await
+        })
+    };
+
     match fetch_source {
         FetchSource::Snapshots => {
             let mut dir = snapshot::get_snapshots(config.aws_profile.clone()).await?;
@@ -77,15 +108,13 @@ pub async fn build_database(
         }
     }
 
-    let org_accounts = if fetch_org_accounts {
-        Some(org_client::fetch_org_accounts(config.aws_profile.clone()).await?)
-    } else {
-        None
-    };
+    let org_accounts = org_accounts_handle.await?.transpose()?;
     debug!(
         fetched = org_accounts.is_some(),
         "org accounts fetch complete"
     );
+
+    managed_policy_handle.await??;
 
     db::build_derived_tables(&db_pool, org_accounts, progress.clone()).await?;
     schema_alterations::apply_schema_alterations(config, &db_pool, progress.clone()).await?;

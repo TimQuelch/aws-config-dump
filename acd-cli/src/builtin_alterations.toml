@@ -33,7 +33,13 @@ UPDATE ec2_vpcendpoint SET privateIpAddresses = (
 
 [[schema_alterations]]
 name = "iam_roles_policies"
-dependencies = ["iam_role", "iam_user", "iam_group", "iam_policy"]
+dependencies = [
+  "iam_role",
+  "iam_user",
+  "iam_group",
+  "iam_policy",
+  "aws_managed_policy",
+]
 sql = '''
 ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyDocument JSON;
 UPDATE iam_policy SET policyDocument = json(url_decode(struct_extract(list_first(
@@ -67,7 +73,11 @@ UPDATE iam_role SET effectivePolicyStatements = (
         FROM iam_role inner_iam_role
         WHERE inner_iam_role.arn = iam_role.arn
     ) AS attached
-    JOIN iam_policy p ON p.arn = attached.policy_arn
+    JOIN (
+        SELECT arn, policyDocument FROM iam_policy
+        UNION ALL
+        SELECT arn, policyDocument FROM aws_managed_policy
+    ) p ON p.arn = attached.policy_arn
 );
 
 ALTER TABLE iam_user ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
@@ -82,6 +92,24 @@ UPDATE iam_user SET inlinePolices =
         lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
     ));
 
+ALTER TABLE iam_user ADD COLUMN effectivePolicyStatements JSON[];
+UPDATE iam_user SET effectivePolicyStatements = (
+    SELECT list_distinct(flatten(list_concat(
+        list(p.policyDocument.Statement::json[]),
+        list_transform(map_values(iam_user.inlinePolices), lambda x: x.Statement::json[])
+    )))
+    FROM (
+        SELECT unnest(map_values(inner_iam_user.attachedManagedPolicies)) AS policy_arn
+        FROM iam_user inner_iam_user
+        WHERE inner_iam_user.arn = iam_user.arn
+    ) AS attached
+    JOIN (
+        SELECT arn, policyDocument FROM iam_policy
+        UNION ALL
+        SELECT arn, policyDocument FROM aws_managed_policy
+    ) p ON p.arn = attached.policy_arn
+);
+
 ALTER TABLE iam_group ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
     USING map_from_entries(list_transform(
         attachedManagedPolicies,
@@ -93,6 +121,24 @@ UPDATE iam_group SET inlinePolices =
         groupPolicyList,
         lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
     ));
+
+ALTER TABLE iam_group ADD COLUMN effectivePolicyStatements JSON[];
+UPDATE iam_group SET effectivePolicyStatements = (
+    SELECT list_distinct(flatten(list_concat(
+        list(p.policyDocument.Statement::json[]),
+        list_transform(map_values(iam_group.inlinePolices), lambda x: x.Statement::json[])
+    )))
+    FROM (
+        SELECT unnest(map_values(inner_iam_group.attachedManagedPolicies)) AS policy_arn
+        FROM iam_group inner_iam_group
+        WHERE inner_iam_group.arn = iam_group.arn
+    ) AS attached
+    JOIN (
+        SELECT arn, policyDocument FROM iam_policy
+        UNION ALL
+        SELECT arn, policyDocument FROM aws_managed_policy
+    ) p ON p.arn = attached.policy_arn
+);
 '''
 
 [[schema_alterations]]

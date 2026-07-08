@@ -13,7 +13,74 @@ use tempfile::{NamedTempFile, TempDir, TempPath};
 use tokio::task::{self, JoinSet};
 use tracing::{debug, error, info, trace};
 
+use aws_client::iam_client;
+
 use crate::util;
+
+pub async fn build_aws_managed_policies_table(
+    pool: &ConnectionPool,
+    all_policies: Vec<(String, String)>,
+    profile: Option<String>,
+    progress: MultiProgress,
+) -> anyhow::Result<()> {
+    let db = pool.get().await?;
+
+    db.with_conn(|c| {
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS aws_managed_policy (
+                arn VARCHAR PRIMARY KEY,
+                defaultVersionId VARCHAR,
+                policyDocument JSON,
+            );",
+        )
+    })
+    .await?;
+
+    let existing: HashMap<String, String> = db
+        .with_conn(|c| {
+            Ok(
+                c.prepare_cached("SELECT arn, defaultVersionId FROM aws_managed_policy")?
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .filter_map(Result::ok)
+                    .collect(),
+            )
+        })
+        .await?;
+
+    let to_fetch: Vec<(String, String)> = all_policies
+        .into_iter()
+        .filter(|(arn, version_id)| existing.get(arn) != Some(version_id))
+        .collect();
+
+    if to_fetch.is_empty() {
+        info!("all AWS managed policies up to date");
+        return Ok(());
+    }
+
+    let bar = progress.add(util::progress_bar(
+        "fetching managed policies",
+        to_fetch.len().try_into().unwrap(),
+    ));
+
+    let fetched = iam_client::fetch_policy_documents(profile, to_fetch, bar).await;
+    info!(
+        count = fetched.len(),
+        "fetched AWS managed policy documents"
+    );
+
+    db.with_conn(move |c| {
+        let mut stmt = c.prepare_cached(
+            "INSERT OR REPLACE INTO aws_managed_policy VALUES (?, ?, json(url_decode(?)))",
+        )?;
+        for (arn, version_id, doc) in &fetched {
+            stmt.execute(duckdb::params![arn, version_id, doc])?;
+        }
+        Ok(())
+    })
+    .await?;
+
+    Ok(())
+}
 
 pub async fn delete_db(path: &Path) -> anyhow::Result<()> {
     if tokio::fs::try_exists(path).await? {
@@ -754,5 +821,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(types, vec!["Custom::Test::Beta"]);
+    }
+
+    mod managed_policies {
+        use super::*;
+
+        async fn setup() -> ConnectionPool {
+            let pool = connect_to_db_in_memory().await.unwrap();
+            build_aws_managed_policies_table(&pool, vec![], None, MultiProgress::new())
+                .await
+                .unwrap();
+            pool
+        }
+
+        #[tokio::test]
+        async fn table_created_on_first_call() {
+            let pool = setup().await;
+            let count: i64 = pool
+                .get()
+                .await
+                .unwrap()
+                .with_conn(|c| {
+                    c.query_row(
+                        "SELECT count(*) FROM information_schema.tables \
+                         WHERE table_name = 'aws_managed_policy'",
+                        [],
+                        |row| row.get(0),
+                    )
+                })
+                .await
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+
+        #[tokio::test]
+        async fn table_is_idempotent_when_called_twice() {
+            let pool = setup().await;
+            build_aws_managed_policies_table(&pool, vec![], None, MultiProgress::new())
+                .await
+                .unwrap();
+            let count: i64 = pool
+                .get()
+                .await
+                .unwrap()
+                .with_conn(|c| {
+                    c.query_row("SELECT count(*) FROM aws_managed_policy", [], |row| {
+                        row.get(0)
+                    })
+                })
+                .await
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+
+        #[tokio::test]
+        async fn existing_policy_at_same_version_not_replaced() {
+            let pool = setup().await;
+            pool.get()
+                .await
+                .unwrap()
+                .with_conn(|c| {
+                    c.execute(
+                        "INSERT INTO aws_managed_policy VALUES (?, ?, json(?))",
+                        duckdb::params![
+                            "arn:aws:iam::aws:policy/ReadOnlyAccess",
+                            "v5",
+                            r#"{"original":true}"#
+                        ],
+                    )
+                })
+                .await
+                .unwrap();
+
+            // Same arn+version in all_policies → diff is empty → no fetch call
+            build_aws_managed_policies_table(
+                &pool,
+                vec![(
+                    "arn:aws:iam::aws:policy/ReadOnlyAccess".to_string(),
+                    "v5".to_string(),
+                )],
+                None,
+                MultiProgress::new(),
+            )
+            .await
+            .unwrap();
+
+            let doc: String = pool
+                .get()
+                .await
+                .unwrap()
+                .with_conn(|c| {
+                    c.query_row(
+                        "SELECT policyDocument::VARCHAR FROM aws_managed_policy \
+                         WHERE arn = 'arn:aws:iam::aws:policy/ReadOnlyAccess'",
+                        [],
+                        |row| row.get(0),
+                    )
+                })
+                .await
+                .unwrap();
+            assert!(doc.contains("original"));
+        }
     }
 }

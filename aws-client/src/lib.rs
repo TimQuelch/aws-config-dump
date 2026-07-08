@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub mod config_client;
+pub mod iam_client;
 pub mod org_client;
 pub mod snapshot;
 
