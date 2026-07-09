@@ -48,18 +48,18 @@ UPDATE aws_managed_policy SET policyStatements = CASE json_type(policyDocument.S
     ELSE []
 END;
 
-ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyStatements JSON[];
-UPDATE aws_managed_policy SET policyStatements = CASE json_type(policyDocument.Statement)
-    WHEN 'ARRAY'  THEN policyDocument.Statement
-    WHEN 'OBJECT' THEN json_array(policyDocument.Statement)
-    ELSE []
-END;
-
 ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyDocument JSON;
 UPDATE iam_policy SET policyDocument = json(url_decode(struct_extract(list_first(
     list_filter(policyVersionList, lambda x: x.isDefaultVersion)),
     'document'
 )));
+
+ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyStatements JSON[];
+UPDATE iam_policy SET policyStatements = CASE json_type(policyDocument.Statement)
+    WHEN 'ARRAY'  THEN policyDocument.Statement
+    WHEN 'OBJECT' THEN json_array(policyDocument.Statement)
+    ELSE []
+END;
 
 ALTER TABLE iam_role ALTER COLUMN assumeRolePolicyDocument SET TYPE JSON
     USING url_decode(assumeRolePolicyDocument);
@@ -69,8 +69,8 @@ ALTER TABLE iam_role ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, 
         lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
     ));
 
-ALTER TABLE iam_role ADD COLUMN IF NOT EXISTS inlinePolices MAP(VARCHAR, JSON);
-UPDATE iam_role SET inlinePolices =
+ALTER TABLE iam_role ADD COLUMN IF NOT EXISTS inlinePolicies MAP(VARCHAR, JSON);
+UPDATE iam_role SET inlinePolicies =
     map_from_entries(list_transform(
         rolePolicyList,
         lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
@@ -80,7 +80,7 @@ ALTER TABLE iam_role ADD COLUMN effectivePolicyStatements JSON[];
 UPDATE iam_role SET effectivePolicyStatements = (
     SELECT list_distinct(flatten(list_concat(
         list(p.policyStatements),
-        list_transform(map_values(iam_role.inlinePolices), lambda x: x.Statement::json[])
+        list_transform(map_values(iam_role.inlinePolicies), lambda x: x.Statement::json[])
     )))
     FROM (
         SELECT unnest(map_values(inner_iam_role.attachedManagedPolicies)) AS policy_arn
@@ -94,43 +94,13 @@ UPDATE iam_role SET effectivePolicyStatements = (
     ) p ON p.arn = attached.policy_arn
 );
 
-ALTER TABLE iam_user ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
-    USING map_from_entries(list_transform(
-        attachedManagedPolicies,
-        lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
-    ));
-ALTER TABLE iam_user ADD COLUMN IF NOT EXISTS inlinePolices MAP(VARCHAR, JSON);
-UPDATE iam_user SET inlinePolices =
-    map_from_entries(list_transform(
-        userPolicyList,
-        lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
-    ));
-
-ALTER TABLE iam_user ADD COLUMN effectivePolicyStatements JSON[];
-UPDATE iam_user SET effectivePolicyStatements = (
-    SELECT list_distinct(flatten(list_concat(
-        list(p.policyStatements),
-        list_transform(map_values(iam_user.inlinePolices), lambda x: x.Statement::json[])
-    )))
-    FROM (
-        SELECT unnest(map_values(inner_iam_user.attachedManagedPolicies)) AS policy_arn
-        FROM iam_user inner_iam_user
-        WHERE inner_iam_user.arn = iam_user.arn
-    ) AS attached
-    JOIN (
-        SELECT arn, policyStatements FROM iam_policy
-        UNION ALL
-        SELECT arn, policyStatements FROM aws_managed_policy
-    ) p ON p.arn = attached.policy_arn
-);
-
 ALTER TABLE iam_group ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
     USING map_from_entries(list_transform(
         attachedManagedPolicies,
         lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
     ));
-ALTER TABLE iam_group ADD COLUMN IF NOT EXISTS inlinePolices MAP(VARCHAR, JSON);
-UPDATE iam_group SET inlinePolices =
+ALTER TABLE iam_group ADD COLUMN IF NOT EXISTS inlinePolicies MAP(VARCHAR, JSON);
+UPDATE iam_group SET inlinePolicies =
     map_from_entries(list_transform(
         groupPolicyList,
         lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
@@ -140,7 +110,7 @@ ALTER TABLE iam_group ADD COLUMN effectivePolicyStatements JSON[];
 UPDATE iam_group SET effectivePolicyStatements = (
     SELECT list_distinct(flatten(list_concat(
         list(p.policyStatements),
-        list_transform(map_values(iam_group.inlinePolices), lambda x: x.Statement::json[])
+        list_transform(map_values(iam_group.inlinePolicies), lambda x: x.Statement::json[])
     )))
     FROM (
         SELECT unnest(map_values(inner_iam_group.attachedManagedPolicies)) AS policy_arn
@@ -153,6 +123,44 @@ UPDATE iam_group SET effectivePolicyStatements = (
         SELECT arn, policyStatements FROM aws_managed_policy
     ) p ON p.arn = attached.policy_arn
 );
+
+ALTER TABLE iam_user ALTER COLUMN attachedManagedPolicies SET TYPE MAP(VARCHAR, VARCHAR)
+    USING map_from_entries(list_transform(
+        attachedManagedPolicies,
+        lambda x: {k: struct_extract(x, 'policyName'), v: struct_extract(x, 'policyArn')}
+    ));
+ALTER TABLE iam_user ADD COLUMN IF NOT EXISTS inlinePolicies MAP(VARCHAR, JSON);
+UPDATE iam_user SET inlinePolicies =
+    map_from_entries(list_transform(
+        userPolicyList,
+        lambda x: {k: x.policyName, v: json(url_decode(x.policyDocument))}
+    ));
+
+ALTER TABLE iam_user ADD COLUMN effectivePolicyStatements JSON[];
+UPDATE iam_user SET effectivePolicyStatements = (
+    SELECT list_distinct(flatten(list_concat(
+        list(p.policyStatements),
+        list_transform(map_values(iam_user.inlinePolicies), lambda x: x.Statement::json[])
+    )))
+    FROM (
+        SELECT unnest(map_values(inner_iam_user.attachedManagedPolicies)) AS policy_arn
+        FROM iam_user inner_iam_user
+        WHERE inner_iam_user.arn = iam_user.arn
+    ) AS attached
+    JOIN (
+        SELECT arn, policyStatements FROM iam_policy
+        UNION ALL
+        SELECT arn, policyStatements FROM aws_managed_policy
+    ) p ON p.arn = attached.policy_arn
+);
+UPDATE iam_user SET effectivePolicyStatements = list_distinct(flatten(list_concat(
+    coalesce(effectivePolicyStatements, []),
+    coalesce((
+        SELECT flatten(list(g.effectivePolicyStatements))
+        FROM iam_group g
+        WHERE list_contains(iam_user.groupList, g.resourceName)
+    ), [])
+)));
 '''
 
 [[schema_alterations]]
