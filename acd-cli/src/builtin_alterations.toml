@@ -41,6 +41,20 @@ dependencies = [
   "aws_managed_policy",
 ]
 sql = '''
+ALTER TABLE aws_managed_policy ADD COLUMN IF NOT EXISTS policyStatements JSON[];
+UPDATE aws_managed_policy SET policyStatements = CASE json_type(policyDocument.Statement)
+    WHEN 'ARRAY'  THEN policyDocument.Statement
+    WHEN 'OBJECT' THEN json_array(policyDocument.Statement)
+    ELSE []
+END;
+
+ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyStatements JSON[];
+UPDATE aws_managed_policy SET policyStatements = CASE json_type(policyDocument.Statement)
+    WHEN 'ARRAY'  THEN policyDocument.Statement
+    WHEN 'OBJECT' THEN json_array(policyDocument.Statement)
+    ELSE []
+END;
+
 ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyDocument JSON;
 UPDATE iam_policy SET policyDocument = json(url_decode(struct_extract(list_first(
     list_filter(policyVersionList, lambda x: x.isDefaultVersion)),
@@ -65,7 +79,7 @@ UPDATE iam_role SET inlinePolices =
 ALTER TABLE iam_role ADD COLUMN effectivePolicyStatements JSON[];
 UPDATE iam_role SET effectivePolicyStatements = (
     SELECT list_distinct(flatten(list_concat(
-        list(p.policyDocument.Statement::json[]),
+        list(p.policyStatements),
         list_transform(map_values(iam_role.inlinePolices), lambda x: x.Statement::json[])
     )))
     FROM (
@@ -74,9 +88,9 @@ UPDATE iam_role SET effectivePolicyStatements = (
         WHERE inner_iam_role.arn = iam_role.arn
     ) AS attached
     JOIN (
-        SELECT arn, policyDocument FROM iam_policy
+        SELECT arn, policyStatements FROM iam_policy
         UNION ALL
-        SELECT arn, policyDocument FROM aws_managed_policy
+        SELECT arn, policyStatements FROM aws_managed_policy
     ) p ON p.arn = attached.policy_arn
 );
 
@@ -95,7 +109,7 @@ UPDATE iam_user SET inlinePolices =
 ALTER TABLE iam_user ADD COLUMN effectivePolicyStatements JSON[];
 UPDATE iam_user SET effectivePolicyStatements = (
     SELECT list_distinct(flatten(list_concat(
-        list(p.policyDocument.Statement::json[]),
+        list(p.policyStatements),
         list_transform(map_values(iam_user.inlinePolices), lambda x: x.Statement::json[])
     )))
     FROM (
@@ -104,9 +118,9 @@ UPDATE iam_user SET effectivePolicyStatements = (
         WHERE inner_iam_user.arn = iam_user.arn
     ) AS attached
     JOIN (
-        SELECT arn, policyDocument FROM iam_policy
+        SELECT arn, policyStatements FROM iam_policy
         UNION ALL
-        SELECT arn, policyDocument FROM aws_managed_policy
+        SELECT arn, policyStatements FROM aws_managed_policy
     ) p ON p.arn = attached.policy_arn
 );
 
@@ -125,7 +139,7 @@ UPDATE iam_group SET inlinePolices =
 ALTER TABLE iam_group ADD COLUMN effectivePolicyStatements JSON[];
 UPDATE iam_group SET effectivePolicyStatements = (
     SELECT list_distinct(flatten(list_concat(
-        list(p.policyDocument.Statement::json[]),
+        list(p.policyStatements),
         list_transform(map_values(iam_group.inlinePolices), lambda x: x.Statement::json[])
     )))
     FROM (
@@ -134,9 +148,9 @@ UPDATE iam_group SET effectivePolicyStatements = (
         WHERE inner_iam_group.arn = iam_group.arn
     ) AS attached
     JOIN (
-        SELECT arn, policyDocument FROM iam_policy
+        SELECT arn, policyStatements FROM iam_policy
         UNION ALL
-        SELECT arn, policyDocument FROM aws_managed_policy
+        SELECT arn, policyStatements FROM aws_managed_policy
     ) p ON p.arn = attached.policy_arn
 );
 '''
