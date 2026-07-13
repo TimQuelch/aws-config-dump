@@ -41,13 +41,6 @@ dependencies = [
   "aws_managed_policy",
 ]
 sql = '''
-ALTER TABLE aws_managed_policy ADD COLUMN IF NOT EXISTS policyStatements JSON[];
-UPDATE aws_managed_policy SET policyStatements = CASE json_type(policyDocument.Statement)
-    WHEN 'ARRAY'  THEN policyDocument.Statement
-    WHEN 'OBJECT' THEN json_array(policyDocument.Statement)
-    ELSE []
-END;
-
 ALTER TABLE iam_policy ADD COLUMN IF NOT EXISTS policyDocument JSON;
 UPDATE iam_policy SET policyDocument = json(url_decode(struct_extract(list_first(
     list_filter(policyVersionList, lambda x: x.isDefaultVersion)),
@@ -153,14 +146,16 @@ UPDATE iam_user SET effectivePolicyStatements = (
         SELECT arn, policyStatements FROM aws_managed_policy
     ) p ON p.arn = attached.policy_arn
 );
-UPDATE iam_user SET effectivePolicyStatements = list_distinct(flatten(list_concat(
+
+ALTER TABLE iam_user ALTER COLUMN groupList SET TYPE VARCHAR[];
+UPDATE iam_user SET effectivePolicyStatements = list_distinct(list_concat(
     coalesce(effectivePolicyStatements, []),
     coalesce((
         SELECT flatten(list(g.effectivePolicyStatements))
         FROM iam_group g
         WHERE list_contains(iam_user.groupList, g.resourceName)
     ), [])
-)));
+));
 '''
 
 [[schema_alterations]]

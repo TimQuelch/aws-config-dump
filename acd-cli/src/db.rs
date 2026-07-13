@@ -31,6 +31,13 @@ pub async fn build_aws_managed_policies_table(
                 arn VARCHAR PRIMARY KEY,
                 defaultVersionId VARCHAR,
                 policyDocument JSON,
+                policyStatements JSON[] AS (
+                    CASE json_type(json_extract(policyDocument, '$.Statement'))
+                        WHEN 'ARRAY'  THEN json_extract(policyDocument, '$.Statement')
+                        WHEN 'OBJECT' THEN json_array(json_extract(policyDocument, '$.Statement'))
+                        ELSE []
+                    END
+                ),
             );",
         )
     })
