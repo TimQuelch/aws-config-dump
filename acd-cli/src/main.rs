@@ -34,13 +34,13 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     match cli.command {
-        Command::Build {
+        Command::Build(cli::BuildArgs {
             aggregator_name,
             no_fetch,
             rebuild,
             with_snapshots,
             fetch_org_accounts,
-        } => {
+        }) => {
             let fetch_source = if no_fetch {
                 build::FetchSource::Skip
             } else if with_snapshots {
@@ -59,18 +59,20 @@ async fn main() -> anyhow::Result<()> {
             .await
         }
         Command::Repl => query::repl(&config),
-        Command::Query {
+        Command::Query(cli::QueryArgs {
             resource_type,
             accounts,
             fields,
+            exclude_fields,
             all_fields,
             r#where,
             where_raw,
-            query,
-            exclude_fields,
+            id,
+            name,
             sort,
             reverse,
-        } => {
+            query,
+        }) => {
             query::query(
                 &config,
                 query::QueryParams {
@@ -80,6 +82,8 @@ async fn main() -> anyhow::Result<()> {
                     all_fields,
                     where_clauses: r#where,
                     where_raw_clauses: where_raw,
+                    ids: id,
+                    names: name,
                     exclude_fields,
                     query,
                     sort,

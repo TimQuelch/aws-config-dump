@@ -21,6 +21,8 @@ pub struct QueryParams {
     pub all_fields: bool,
     pub where_clauses: Option<Vec<(String, String)>>,
     pub where_raw_clauses: Option<Vec<String>>,
+    pub ids: Option<Vec<String>>,
+    pub names: Option<Vec<String>>,
     pub exclude_fields: Option<Vec<String>>,
     pub query: String,
     pub sort: Option<Vec<String>>,
@@ -51,6 +53,37 @@ fn build_where_raw_clause(clauses: &[String]) -> String {
         write!(acc, " AND ({w})").expect("write to String cannot fail");
         acc
     })
+}
+
+fn build_regex_clause(column: &str, patterns: &[String]) -> String {
+    if patterns.is_empty() {
+        return String::new();
+    }
+    let matches = patterns
+        .iter()
+        .map(|p| format!("regexp_matches(\"{column}\", '{p}')"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!(" AND ({matches})")
+}
+
+pub struct Filters<'a> {
+    pub accounts: &'a [String],
+    pub where_clauses: &'a [(String, String)],
+    pub where_raw: &'a [String],
+    pub ids: &'a [String],
+    pub names: &'a [String],
+}
+
+pub fn build_filter_predicates(filters: &Filters) -> String {
+    format!(
+        "{}{}{}{}{}",
+        build_account_clause(filters.accounts),
+        build_where_clause(filters.where_clauses),
+        build_where_raw_clause(filters.where_raw),
+        build_regex_clause("resourceId", filters.ids),
+        build_regex_clause("resourceName", filters.names),
+    )
 }
 
 fn build_order_by_clause(fields: &[String], reverse: bool) -> String {
@@ -91,18 +124,25 @@ fn build_query(
         extra_columns,
         &params.exclude_fields.unwrap_or_default(),
     );
-    let account_clause = build_account_clause(&params.accounts.unwrap_or_default());
-    let where_clauses = build_where_clause(&params.where_clauses.unwrap_or_default());
-    let where_raw_clauses = build_where_raw_clause(&params.where_raw_clauses.unwrap_or_default());
+    let accounts = params.accounts.unwrap_or_default();
+    let where_clauses = params.where_clauses.unwrap_or_default();
+    let where_raw = params.where_raw_clauses.unwrap_or_default();
+    let ids = params.ids.unwrap_or_default();
+    let names = params.names.unwrap_or_default();
+    let predicates = build_filter_predicates(&Filters {
+        accounts: &accounts,
+        where_clauses: &where_clauses,
+        where_raw: &where_raw,
+        ids: &ids,
+        names: &names,
+    });
     let order_by_clause = build_order_by_clause(&params.sort.unwrap_or_default(), params.reverse);
     format!(
         "CREATE OR REPLACE TEMPORARY VIEW input AS
             SELECT {columns} FROM query_table('{table}')
             LEFT JOIN accounts USING (accountId)
             WHERE true
-            {account_clause}
-            {where_clauses}
-            {where_raw_clauses}
+            {predicates}
             {order_by_clause};
         {user_query};",
         user_query = params.query,
@@ -242,6 +282,8 @@ mod tests {
             all_fields: false,
             where_clauses: None,
             where_raw_clauses: None,
+            ids: None,
+            names: None,
             exclude_fields: Some(vec![]),
             query: "SELECT * FROM input".to_string(),
             sort: None,
@@ -297,6 +339,26 @@ mod tests {
     }
 
     #[test]
+    fn build_regex_clause_empty_is_empty() {
+        assert!(build_regex_clause("resourceId", &[]).is_empty());
+    }
+
+    #[test]
+    fn build_regex_clause_single_pattern() {
+        let clause = build_regex_clause("resourceId", &["someid".to_string()]);
+        assert_eq!(clause, " AND (regexp_matches(\"resourceId\", 'someid'))");
+    }
+
+    #[test]
+    fn build_regex_clause_multiple_patterns_are_ored() {
+        let clause = build_regex_clause("resourceName", &["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            clause,
+            " AND (regexp_matches(\"resourceName\", 'a') OR regexp_matches(\"resourceName\", 'b'))"
+        );
+    }
+
+    #[test]
     fn build_where_raw_clause_empty_is_empty() {
         assert!(build_where_raw_clause(&[]).is_empty());
     }
@@ -317,6 +379,93 @@ mod tests {
             clause,
             " AND (resourceId LIKE 'arn:%') AND (awsRegion != 'us-east-1')"
         );
+    }
+
+    #[test]
+    fn filter_predicates_empty_when_no_filters() {
+        let filters = Filters {
+            accounts: &[],
+            where_clauses: &[],
+            where_raw: &[],
+            ids: &[],
+            names: &[],
+        };
+        assert!(build_filter_predicates(&filters).is_empty());
+    }
+
+    #[test]
+    fn filter_predicates_combine_all_families() {
+        let filters = Filters {
+            accounts: &["prod".to_string()],
+            where_clauses: &[("awsRegion".to_string(), "us-east-1".to_string())],
+            where_raw: &["x > 1".to_string()],
+            ids: &["myid".to_string()],
+            names: &["myname".to_string()],
+        };
+        let p = build_filter_predicates(&filters);
+        assert!(p.contains("accountId IN ('prod')"));
+        assert!(p.contains("(\"awsRegion\" = 'us-east-1')"));
+        assert!(p.contains("(x > 1)"));
+        assert!(p.contains("regexp_matches(\"resourceId\", 'myid')"));
+        assert!(p.contains("regexp_matches(\"resourceName\", 'myname')"));
+    }
+
+    #[test]
+    fn filter_predicates_account_where_boundary_exact() {
+        // account contributes no leading space, where contributes one, so the
+        // boundary between them must be a single space.
+        let filters = Filters {
+            accounts: &["prod".to_string()],
+            where_clauses: &[("awsRegion".to_string(), "us-east-1".to_string())],
+            where_raw: &[],
+            ids: &[],
+            names: &[],
+        };
+        assert_eq!(
+            build_filter_predicates(&filters),
+            "AND (accountId IN ('prod') OR accountName IN ('prod')) AND (\"awsRegion\" = 'us-east-1')"
+        );
+    }
+
+    #[test]
+    fn id_filter_generates_regexp_matches() {
+        let q = build_query(
+            QueryParams {
+                ids: Some(vec!["myid".to_string()]),
+                ..default_params()
+            },
+            false,
+            &HashMap::new(),
+        );
+        assert!(q.contains("regexp_matches(\"resourceId\", 'myid')"));
+    }
+
+    #[test]
+    fn name_filter_generates_regexp_matches() {
+        let q = build_query(
+            QueryParams {
+                names: Some(vec!["myname".to_string()]),
+                ..default_params()
+            },
+            false,
+            &HashMap::new(),
+        );
+        assert!(q.contains("regexp_matches(\"resourceName\", 'myname')"));
+    }
+
+    #[test]
+    fn id_filter_combines_with_account_filter() {
+        let q = build_query(
+            QueryParams {
+                accounts: Some(vec!["123456789012".to_string()]),
+                ids: Some(vec!["myid".to_string()]),
+                ..default_params()
+            },
+            false,
+            &HashMap::new(),
+        );
+        assert!(q.contains("accountId IN ('123456789012')"));
+        assert!(q.contains("regexp_matches(\"resourceId\", 'myid')"));
     }
 
     #[test]

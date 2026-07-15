@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-only
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use clap_complete::{ArgValueCandidates, ArgValueCompleter};
 
 use crate::completion;
@@ -26,68 +26,85 @@ pub struct Cli {
     pub verbose: u8,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "only constructed once per invocation. Query is largest type but also the most common"
+)]
 #[derive(Subcommand)]
 pub enum Command {
     /// Build the offline database from AWS Config
     #[command(visible_alias = "b")]
-    Build {
-        /// Use cross-account aggregated data
-        #[arg(short, long)]
-        aggregator_name: Option<String>,
-
-        /// Use snapshots
-        #[arg(short = 's', long)]
-        with_snapshots: bool,
-
-        /// Don't fetch data, only build the resource tables
-        #[arg(short, long)]
-        no_fetch: bool,
-
-        /// Force re-fetching all resources
-        #[arg(short, long)]
-        rebuild: bool,
-
-        /// Fetch account names from the AWS Organizations API
-        #[arg(long)]
-        fetch_org_accounts: bool,
-    },
+    Build(BuildArgs),
     /// Open an interactive `DuckDB` REPL against the local database
     #[command(visible_alias = "r")]
     Repl,
     /// Query the offline database
     #[command(visible_alias = "q")]
-    Query {
-        /// Filter on resource type
-        #[arg(short, long, add = ArgValueCandidates::new(completion::resource_type_candidates))]
-        resource_type: Option<String>,
-        /// Filter on account
-        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::account_candidates))]
-        accounts: Option<Vec<String>>,
-        /// Select fields
-        #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
-        fields: Option<Vec<String>>,
-        /// Exclude fields from the query
-        #[arg(short = 'x', long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
-        exclude_fields: Option<Vec<String>>,
-        /// Include all fields
-        #[arg(short = 'F', long)]
-        all_fields: bool,
-        /// Where clause in the form `key=value`
-        #[arg(short, long, num_args(1..), value_parser = parse_where_clause, add = ArgValueCompleter::new(completion::where_clause_completer))]
-        r#where: Option<Vec<(String, String)>>,
-        /// Where clause in arbitrary format
-        #[arg(short = 'W', long, num_args(1..))]
-        where_raw: Option<Vec<String>>,
-        /// Sort output by fields
-        #[arg(short = 's', long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
-        sort: Option<Vec<String>>,
-        /// Reverse sort order (descending)
-        #[arg(long)]
-        reverse: bool,
-        /// Query
-        #[arg(short, long, default_value = "SELECT * FROM input")]
-        query: String,
-    },
+    Query(QueryArgs),
+}
+
+#[allow(clippy::struct_excessive_bools, reason = "valid for CLI args")]
+#[derive(Args)]
+pub struct BuildArgs {
+    /// Use cross-account aggregated data
+    #[arg(short, long)]
+    pub aggregator_name: Option<String>,
+
+    /// Use snapshots
+    #[arg(short = 's', long)]
+    pub with_snapshots: bool,
+
+    /// Don't fetch data, only build the resource tables
+    #[arg(short, long)]
+    pub no_fetch: bool,
+
+    /// Force re-fetching all resources
+    #[arg(short, long)]
+    pub rebuild: bool,
+
+    /// Fetch account names from the AWS Organizations API
+    #[arg(long)]
+    pub fetch_org_accounts: bool,
+}
+
+#[derive(Args)]
+pub struct QueryArgs {
+    /// Filter on resource type
+    #[arg(short, long, add = ArgValueCandidates::new(completion::resource_type_candidates))]
+    pub resource_type: Option<String>,
+    /// Filter on account
+    #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::account_candidates))]
+    pub accounts: Option<Vec<String>>,
+    /// Select fields
+    #[arg(short, long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
+    pub fields: Option<Vec<String>>,
+    /// Exclude fields from the query
+    #[arg(short = 'x', long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
+    pub exclude_fields: Option<Vec<String>>,
+    /// Include all fields
+    #[arg(short = 'F', long)]
+    pub all_fields: bool,
+    /// Where clause in the form `key=value`
+    #[arg(short, long, num_args(1..), value_parser = parse_where_clause, add = ArgValueCompleter::new(completion::where_clause_completer))]
+    pub r#where: Option<Vec<(String, String)>>,
+    /// Where clause in arbitrary format
+    #[arg(short = 'W', long, num_args(1..))]
+    pub where_raw: Option<Vec<String>>,
+    /// Filter resourceId by regex (partial match; repeatable, OR-combined)
+    #[arg(short = 'i', long, num_args(1..), add = ArgValueCompleter::new(completion::id_candidates))]
+    pub id: Option<Vec<String>>,
+    /// Filter resourceName by regex (partial match; repeatable, OR-combined)
+    #[arg(short = 'n', long, num_args(1..), add = ArgValueCompleter::new(completion::name_candidates))]
+    pub name: Option<Vec<String>>,
+    /// Sort output by fields
+    #[arg(short = 's', long, num_args(1..), add = ArgValueCandidates::new(completion::field_candidates))]
+    pub sort: Option<Vec<String>>,
+    /// Reverse sort order (descending)
+    #[arg(long)]
+    pub reverse: bool,
+    /// Query
+    #[arg(short, long, default_value = "SELECT * FROM input")]
+    pub query: String,
 }
 
 fn parse_where_clause(arg: &str) -> Result<(String, String), String> {

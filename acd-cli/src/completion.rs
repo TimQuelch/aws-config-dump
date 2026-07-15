@@ -12,6 +12,7 @@ use tokio::task;
 
 use crate::cli::Cli;
 use crate::config::{Config, ConfigFile};
+use crate::query;
 use crate::util;
 
 static PARSED_ARGS: LazyLock<ArgMatches> = LazyLock::new(|| {
@@ -75,11 +76,7 @@ pub fn account_candidates() -> Vec<clap_complete::CompletionCandidate> {
 }
 
 pub fn field_candidates() -> Vec<clap_complete::CompletionCandidate> {
-    let table = PARSED_ARGS
-        .subcommand_matches("query")
-        .and_then(|x| x.get_one::<String>("resource_type"))
-        .map_or_else(|| "resources".to_string(), util::resource_table_name);
-
+    let table = resource_table();
     query_results_candidates(
         format!(
             "FROM information_schema.columns SELECT column_name, data_type
@@ -90,22 +87,82 @@ pub fn field_candidates() -> Vec<clap_complete::CompletionCandidate> {
     )
 }
 
+fn resource_table() -> String {
+    PARSED_ARGS
+        .subcommand_matches("query")
+        .and_then(|m| m.get_one::<String>("resource_type"))
+        .map_or_else(|| "resources".to_string(), util::resource_table_name)
+}
+
+fn filter_predicates() -> String {
+    // Turn every filter already on the command line into the same SQL predicates the main query
+    // uses, so completion candidates are narrowed by the other args. ID and Name filters are not
+    // included in the completion filter query because these are 'OR'd together.
+    let m = PARSED_ARGS.subcommand_matches("query");
+    let strings = |id: &str| -> Vec<String> {
+        m.and_then(|m| m.get_many::<String>(id))
+            .map(|vals| vals.cloned().collect())
+            .unwrap_or_default()
+    };
+    let where_clauses: Vec<(String, String)> = m
+        .and_then(|m| m.get_many::<(String, String)>("where"))
+        .map(|vals| vals.cloned().collect())
+        .unwrap_or_default();
+    let accounts = strings("accounts");
+    let where_raw = strings("where_raw");
+    query::build_filter_predicates(&query::Filters {
+        accounts: &accounts,
+        where_clauses: &where_clauses,
+        where_raw: &where_raw,
+        ids: &[],
+        names: &[],
+    })
+}
+
+/// SQL that lists distinct values of `column` from `table`, narrowed by
+/// `predicates` (from [`filter_predicates`]) and the `prefix` being completed.
+fn column_candidates_sql(table: &str, column: &str, predicates: &str, prefix: &str) -> String {
+    format!(
+        r#"SELECT DISTINCT "{column}" FROM query_table('{table}')
+             LEFT JOIN accounts USING (accountId)
+             WHERE true {predicates} AND "{column}" LIKE '{prefix}%'
+             ORDER BY "{column}";"#
+    )
+}
+
+fn column_value_candidates(
+    column: &str,
+    current: &std::ffi::OsStr,
+) -> Vec<clap_complete::CompletionCandidate> {
+    let sql = column_candidates_sql(
+        &resource_table(),
+        column,
+        &filter_predicates(),
+        &current.to_string_lossy(),
+    );
+    query_results_candidates(&sql)
+}
+
+pub fn id_candidates(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
+    column_value_candidates("resourceId", current)
+}
+
+pub fn name_candidates(current: &std::ffi::OsStr) -> Vec<clap_complete::CompletionCandidate> {
+    column_value_candidates("resourceName", current)
+}
+
 pub fn where_clause_completer(
     current: &std::ffi::OsStr,
 ) -> Vec<clap_complete::CompletionCandidate> {
-    let table = PARSED_ARGS
-        .subcommand_matches("query")
-        .and_then(|x| x.get_one::<String>("resource_type"))
-        .map_or_else(|| "resources".to_string(), util::resource_table_name);
+    let table = resource_table();
 
     if let Some((key, prefix)) = current.to_string_lossy().split_once('=') {
         let key_prefix = format!("{key}=");
-        query_results_candidates(
-            format!(r#"FROM query_table('{table}') SELECT DISTINCT "{key}" WHERE "{key}" LIKE '{prefix}%';"#).as_str(),
-        )
-        .into_iter()
-        .map(|c| c.add_prefix(&key_prefix))
-        .collect()
+        let sql = column_candidates_sql(&table, key, &filter_predicates(), prefix);
+        query_results_candidates(&sql)
+            .into_iter()
+            .map(|c| c.add_prefix(&key_prefix))
+            .collect()
     } else {
         query_results_candidates(
             format!(
