@@ -67,6 +67,30 @@ pub struct BuildArgs {
     pub fetch_org_accounts: bool,
 }
 
+/// Output format for query results
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum OutputFormat {
+    /// Tab-separated values
+    Tsv,
+    /// JSON array of row objects
+    Json,
+    /// Comma-separated values
+    Csv,
+    /// Newline-delimited JSON (one object per line)
+    Ndjson,
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            OutputFormat::Tsv => "tsv",
+            OutputFormat::Json => "json",
+            OutputFormat::Csv => "csv",
+            OutputFormat::Ndjson => "ndjson",
+        })
+    }
+}
+
 #[derive(Args)]
 pub struct QueryArgs {
     /// Filter on resource type
@@ -102,6 +126,9 @@ pub struct QueryArgs {
     /// Reverse sort order (descending)
     #[arg(long)]
     pub reverse: bool,
+    /// Output format
+    #[arg(short = 'o', long, default_value_t = OutputFormat::Tsv)]
+    pub format: OutputFormat,
     /// Query
     #[arg(short, long, default_value = "SELECT * FROM input")]
     pub query: String,

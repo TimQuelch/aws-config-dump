@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
             name,
             sort,
             reverse,
+            format,
             query,
         }) => {
             query::query(
@@ -88,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
                     query,
                     sort,
                     reverse,
+                    format,
                 },
             )
             .await

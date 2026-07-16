@@ -4,6 +4,7 @@
 
 use std::{collections::HashMap, fmt::Write, os::unix::process::CommandExt, process::Command};
 
+use crate::cli::OutputFormat;
 use crate::config::Config;
 use crate::db;
 use crate::util;
@@ -27,6 +28,7 @@ pub struct QueryParams {
     pub query: String,
     pub sort: Option<Vec<String>>,
     pub reverse: bool,
+    pub format: OutputFormat,
 }
 
 fn build_account_clause(accounts: &[String]) -> String {
@@ -169,13 +171,19 @@ async fn detect_has_account_name(db_path: &std::path::Path) -> bool {
 
 /// Query the database
 ///
-/// Calls the duckdb CLI instead of using the SDK so we don't need to implement TSV formatting here
+/// Calls the duckdb CLI instead of using the SDK so we don't need to implement output formatting here
 pub async fn query(config: &Config, params: QueryParams) -> anyhow::Result<()> {
     let has_account_name = detect_has_account_name(&config.db_path).await;
+    let mode = match params.format {
+        OutputFormat::Tsv => "tabs",
+        OutputFormat::Json => "json",
+        OutputFormat::Csv => "csv",
+        OutputFormat::Ndjson => "jsonlines",
+    };
     let final_query = build_query(params, has_account_name, &config.query_extra_columns);
 
     Command::new("duckdb")
-        .args(["-readonly", "-safe", "-cmd", ".mode tabs"])
+        .args(["-readonly", "-safe", "-cmd", &format!(".mode {mode}")])
         .arg(&config.db_path)
         .arg(&final_query)
         .spawn()?
@@ -288,6 +296,7 @@ mod tests {
             query: "SELECT * FROM input".to_string(),
             sort: None,
             reverse: false,
+            format: OutputFormat::Tsv,
         }
     }
 
