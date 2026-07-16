@@ -122,6 +122,7 @@
               [
                 bacon
                 rust-analyzer
+                llm-agents.packages.${system}.openspec
               ]
               ++ preCommit.enabledPackages;
           };
