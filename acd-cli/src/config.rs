@@ -24,17 +24,37 @@ use crate::builtin_alterations;
 // - The README config section covers the common cases in prose. Nothing checks
 //   it, so it needs updating by hand.
 
+/// Per-database settings for one builtin fetcher, keyed by fetcher name.
+///
+/// Both fields are optional so that saying nothing leaves today's behaviour
+/// untouched: a fetcher with no configuration runs, using the database's own
+/// `aws_profile`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct FetcherConfig {
+    /// Defaults to true.
+    enabled: Option<bool>,
+    /// Defaults to the database's `aws_profile`.
+    ///
+    /// Exists because the AWS Organizations API has to be called against the
+    /// management or delegated admin account, which is routinely not the account
+    /// the Config data is read from.
+    aws_profile: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 struct DbConfig {
     aggregator_name: Option<String>,
     path: Option<PathBuf>,
     aws_profile: Option<String>,
+    #[serde(default)]
+    fetchers: HashMap<String, FetcherConfig>,
 }
 
 struct ResolvedDbConfig {
     path: PathBuf,
     aggregator_name: Option<String>,
     aws_profile: Option<String>,
+    fetchers: HashMap<String, FetcherConfig>,
 }
 
 impl DbConfig {
@@ -48,6 +68,7 @@ impl DbConfig {
             }),
             aggregator_name: self.aggregator_name.clone(),
             aws_profile: self.aws_profile.clone(),
+            fetchers: self.fetchers.clone(),
         }
     }
 }
@@ -146,6 +167,7 @@ pub struct Config {
     pub global_schema_alterations: Vec<GlobalSchemaAlteration>,
     pub custom_tables: Vec<CustomTable>,
     builtin_filter: BuiltinAlterationsConfig,
+    fetchers: HashMap<String, FetcherConfig>,
 }
 
 impl Config {
@@ -154,6 +176,7 @@ impl Config {
             path,
             aws_profile,
             aggregator_name,
+            fetchers,
         } = Config::resolve_db(config_file.as_ref(), db_name)?;
 
         let (
@@ -183,6 +206,7 @@ impl Config {
             global_schema_alterations,
             custom_tables,
             builtin_filter,
+            fetchers,
         })
     }
 
@@ -272,6 +296,28 @@ impl Config {
     pub fn custom_tables(&self) -> &[CustomTable] {
         &self.custom_tables
     }
+
+    /// Whether a builtin fetcher should run for this database.
+    ///
+    /// Unconfigured fetchers run, so an existing config file behaves exactly as
+    /// it did before fetchers were configurable.
+    pub fn fetcher_enabled(&self, name: &str) -> bool {
+        self.fetchers
+            .get(name)
+            .and_then(|f| f.enabled)
+            .unwrap_or(true)
+    }
+
+    /// The AWS profile a builtin fetcher should authenticate with.
+    ///
+    /// Falls back to the database's own profile, which is what every fetcher
+    /// used before this was configurable.
+    pub fn fetcher_profile(&self, name: &str) -> Option<String> {
+        self.fetchers
+            .get(name)
+            .and_then(|f| f.aws_profile.clone())
+            .or_else(|| self.aws_profile.clone())
+    }
 }
 
 fn project_dirs() -> ProjectDirs {
@@ -302,6 +348,19 @@ mod tests {
             dev.aggregator_name.is_none(),
             "dev is the non-aggregator example"
         );
+
+        // Both fetcher settings should be demonstrated, and on different
+        // databases, since they are configured per database.
+        let prod_ou = prod
+            .fetchers
+            .get("organizational_units")
+            .expect("prod should show a fetcher profile override");
+        assert_eq!(prod_ou.aws_profile.as_deref(), Some("prod-management"));
+        let dev_ou = dev
+            .fetchers
+            .get("organizational_units")
+            .expect("dev should show a disabled fetcher");
+        assert_eq!(dev_ou.enabled, Some(false));
 
         assert!(config.query_extra_columns.contains_key("ec2_subnet"));
         assert!(
@@ -424,6 +483,7 @@ sql = 'ALTER TABLE "{table}" ADD COLUMN bar VARCHAR'
                         path: None,
                         aggregator_name: Some("my-aggregator".to_owned()),
                         aws_profile: None,
+                        fetchers: HashMap::new(),
                     }
                 ),
                 (
@@ -432,6 +492,7 @@ sql = 'ALTER TABLE "{table}" ADD COLUMN bar VARCHAR'
                         path: Some(PathBuf::from("/path/to/db.otherext")),
                         aggregator_name: None,
                         aws_profile: Some("some_profile".to_string()),
+                        fetchers: HashMap::new(),
                     }
                 ),
             ])
@@ -561,6 +622,217 @@ sql = "ALTER TABLE {table} ADD COLUMN x VARCHAR"
         assert_eq!(
             items.last().unwrap().sql,
             "ALTER TABLE {table} ADD COLUMN x VARCHAR"
+        );
+    }
+
+    /// Loads a config from TOML, resolving the named database.
+    fn load_toml(toml_str: &str, db: Option<&str>) -> Config {
+        Config::load(Some(toml::from_str(toml_str).unwrap()), db).unwrap()
+    }
+
+    #[test]
+    fn fetcher_config_deserializes_correctly() {
+        let toml_str = r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+aws_profile = "prod-readonly"
+
+[databases.prod.fetchers.organizational_units]
+enabled = false
+aws_profile = "prod-management"
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        let fetchers = &config.databases["prod"].fetchers;
+        assert_eq!(fetchers.len(), 1);
+        let ou = &fetchers["organizational_units"];
+        assert_eq!(ou.enabled, Some(false));
+        assert_eq!(ou.aws_profile.as_deref(), Some("prod-management"));
+    }
+
+    #[test]
+    fn fetcher_config_fields_are_individually_optional() {
+        let toml_str = r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+
+[databases.prod.fetchers.organizational_units]
+aws_profile = "mgmt"
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        let ou = &config.databases["prod"].fetchers["organizational_units"];
+        assert_eq!(
+            ou.enabled, None,
+            "omitted enabled should not default to false"
+        );
+        assert_eq!(ou.aws_profile.as_deref(), Some("mgmt"));
+    }
+
+    /// Every config file predating this option must keep parsing.
+    #[test]
+    fn database_without_fetchers_is_valid() {
+        let toml_str = r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+aws_profile = "prod"
+"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(config.databases["prod"].fetchers.is_empty());
+    }
+
+    #[test]
+    fn unconfigured_fetcher_is_enabled_with_the_database_profile() {
+        let config = load_toml(
+            r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+aws_profile = "prod-readonly"
+"#,
+            Some("prod"),
+        );
+
+        assert!(config.fetcher_enabled("organizational_units"));
+        assert_eq!(
+            config.fetcher_profile("organizational_units").as_deref(),
+            Some("prod-readonly"),
+            "an unconfigured fetcher must behave exactly as it did before this option existed"
+        );
+    }
+
+    #[test]
+    fn configured_fetcher_profile_overrides_the_database_profile() {
+        let config = load_toml(
+            r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+aws_profile = "prod-readonly"
+
+[databases.prod.fetchers.organizational_units]
+aws_profile = "prod-management"
+"#,
+            Some("prod"),
+        );
+
+        assert_eq!(
+            config.fetcher_profile("organizational_units").as_deref(),
+            Some("prod-management")
+        );
+        // The database's own profile is untouched: Config data still reads with it.
+        assert_eq!(config.aws_profile.as_deref(), Some("prod-readonly"));
+    }
+
+    #[test]
+    fn fetcher_profile_falls_back_when_only_enabled_is_configured() {
+        let config = load_toml(
+            r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+aws_profile = "prod-readonly"
+
+[databases.prod.fetchers.organizational_units]
+enabled = true
+"#,
+            Some("prod"),
+        );
+
+        assert_eq!(
+            config.fetcher_profile("organizational_units").as_deref(),
+            Some("prod-readonly")
+        );
+    }
+
+    #[test]
+    fn disabled_fetcher_reads_as_disabled() {
+        let config = load_toml(
+            r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+
+[databases.prod.fetchers.organizational_units]
+enabled = false
+"#,
+            Some("prod"),
+        );
+
+        assert!(!config.fetcher_enabled("organizational_units"));
+    }
+
+    /// Fetcher settings belong to one database, not to the config file.
+    #[test]
+    fn fetchers_are_configured_per_database() {
+        let toml_str = r#"
+default_database = "prod"
+
+[databases.prod]
+path = "/tmp/prod.duckdb"
+aws_profile = "prod"
+
+[databases.prod.fetchers.organizational_units]
+aws_profile = "prod-management"
+
+[databases.sandbox]
+path = "/tmp/sandbox.duckdb"
+aws_profile = "sandbox"
+
+[databases.sandbox.fetchers.organizational_units]
+enabled = false
+"#;
+        let prod = load_toml(toml_str, Some("prod"));
+        assert!(prod.fetcher_enabled("organizational_units"));
+        assert_eq!(
+            prod.fetcher_profile("organizational_units").as_deref(),
+            Some("prod-management")
+        );
+
+        let sandbox = load_toml(toml_str, Some("sandbox"));
+        assert!(
+            !sandbox.fetcher_enabled("organizational_units"),
+            "sandbox's own setting should apply"
+        );
+    }
+
+    #[test]
+    fn fetcher_settings_do_not_leak_between_databases() {
+        let toml_str = r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+aws_profile = "prod"
+
+[databases.prod.fetchers.organizational_units]
+enabled = false
+aws_profile = "prod-management"
+
+[databases.other]
+path = "/tmp/other.duckdb"
+aws_profile = "other"
+"#;
+        let other = load_toml(toml_str, Some("other"));
+        assert!(
+            other.fetcher_enabled("organizational_units"),
+            "prod disabling the fetcher must not disable it for other"
+        );
+        assert_eq!(
+            other.fetcher_profile("organizational_units").as_deref(),
+            Some("other"),
+            "prod's fetcher profile must not leak into other"
+        );
+    }
+
+    #[test]
+    fn unknown_fetcher_name_is_enabled_by_default() {
+        let config = load_toml(
+            r#"
+[databases.prod]
+path = "/tmp/prod.duckdb"
+
+[databases.prod.fetchers.organizational_units]
+enabled = false
+"#,
+            Some("prod"),
+        );
+
+        assert!(
+            config.fetcher_enabled("some_other_fetcher"),
+            "disabling one fetcher must not disable the rest"
         );
     }
 

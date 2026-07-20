@@ -104,6 +104,8 @@ aws_profile = "dev"
 disabled = ["name_from_tags"]
 ```
 
+Alongside AWS Config data, acd runs builtin fetchers for things Config does not cover, such as organizational units from AWS Organizations. Fetchers are configured per database under `[databases.<name>.fetchers.<fetcher>]`, and run by default. Set `enabled = false` to turn one off, or `aws_profile` to authenticate it against a different account. That last one matters for organizational units, because the Organizations API has to be called against the management or delegated admin account, which is often not where the Config data is read from.
+
 acd can also run your own SQL once the database is built: alterations against a single table, alterations applied to every table in turn, extra tables derived from the resource tables, and extra columns surfaced by `acd query`.
 
 There are a number of builtin schema alterations that run by default to make some resource types a bit more useful. These can be viewed in [`acd-cli/src/builtin_alterations.toml`](acd-cli/src/builtin_alterations.toml). This format is the same as the user provided config file, so these can be used as an example to build your own.

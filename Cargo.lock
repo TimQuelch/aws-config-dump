@@ -19,6 +19,7 @@ dependencies = [
  "indicatif",
  "serde",
  "serde_ignored",
+ "serde_json",
  "tempfile",
  "tokio",
  "toml",

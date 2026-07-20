@@ -24,6 +24,17 @@ default_database = "prod"
 aggregator_name = "my-aggregator"
 aws_profile = "prod"
 
+# Settings for a builtin fetcher, keyed by fetcher name. Fetchers pull data
+# that AWS Config does not cover, and are configured per database. Both fields
+# are optional: a fetcher with no configuration runs, using the database's own
+# aws_profile.
+[databases.prod.fetchers.organizational_units]
+# The Organizations API must be called against the management (or delegated
+# admin) account, which is often not the account the Config data is read from.
+aws_profile = "prod-management"
+# enabled defaults to true.
+# enabled = true
+
 # A single-account setup. With no aggregator_name, acd reads the account's own
 # Config data.
 [databases.dev]
@@ -31,6 +42,13 @@ aws_profile = "dev"
 # path defaults to a file in the XDG data directory. Override it if you want
 # the database somewhere specific.
 # path = "/path/to/dev.duckdb"
+
+# Turn a fetcher off for this database, for example when it has no
+# Organizations access. This also releases the fetcher's claim on its resource
+# types, so rows it previously stored are cleaned up on the next build rather
+# than left stale.
+[databases.dev.fetchers.organizational_units]
+enabled = false
 
 # Extra columns surfaced by the query command for specific resource types.
 # These are shown in addition to the default columns when you query that table.

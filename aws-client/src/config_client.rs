@@ -18,6 +18,10 @@ use aws_sdk_config::{
     },
 };
 use aws_smithy_async::future::pagination_stream::PaginationStream;
+
+/// Re-exported so callers can name the type appearing in this module's public
+/// API without depending on the AWS Config SDK directly.
+pub use aws_sdk_config::types::ResourceType as ConfigResourceType;
 use aws_smithy_types_convert::{date_time::DateTimeExt, stream::PaginationStreamExt};
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};

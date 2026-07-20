@@ -11,10 +11,12 @@ use tracing::{Level, error};
 
 mod build;
 mod builtin_alterations;
+mod builtin_fetchers;
 mod cli;
 mod completion;
 mod config;
 mod db;
+mod fetcher;
 mod query;
 mod schema_alterations;
 mod util;
