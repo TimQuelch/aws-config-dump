@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: 2026 Tim Quelch <tim@tquelch.com>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Example acd configuration.
+#
+# Copy this to $XDG_CONFIG_HOME/acd/config.toml (typically
+# ~/.config/acd/config.toml), or point at it with `acd --config`.
+#
+# Everything here is optional. With no config file at all, acd uses the default
+# AWS profile and a database in the XDG data directory.
+#
+# This file is loaded by a test, so it always matches the current config
+# format. If a field here stops working, that is a bug.
+
+# The database used when --db is not given.
+default_database = "prod"
+
+# Databases are named, and each one is a separate DuckDB file. Use --db <name>
+# to pick one for a single command.
+
+# A multi-account setup, reading aggregated data from a Config aggregator.
+[databases.prod]
+aggregator_name = "my-aggregator"
+aws_profile = "prod"
+
+# A single-account setup. With no aggregator_name, acd reads the account's own
+# Config data.
+[databases.dev]
+aws_profile = "dev"
+# path defaults to a file in the XDG data directory. Override it if you want
+# the database somewhere specific.
+# path = "/path/to/dev.duckdb"
+
+# Extra columns surfaced by the query command for specific resource types.
+# These are shown in addition to the default columns when you query that table.
+[query_extra_columns]
+ec2_vpc = ["cidrBlock"]
+ec2_subnet = ["vpcId", "cidrBlock", "availableIpAddressCount"]
+
+# acd ships with built-in schema alterations that tidy up common resource
+# types. Disable them individually by name, or all at once.
+[builtin_alterations]
+disabled = ["name_from_tags"]
+# disable_all = true
+
+# Your own SQL alterations, run against a single resource table after the
+# tables are built. dependencies lists the tables that must exist first, so the
+# alteration is skipped when none of them were fetched.
+[[schema_alterations]]
+name = "ec2_instance_short_id"
+dependencies = ["ec2_instance"]
+sql = '''
+ALTER TABLE ec2_instance ADD COLUMN shortId VARCHAR;
+UPDATE ec2_instance SET shortId = replace(resourceId, 'i-', '');
+'''
+
+# An alteration can be skipped at runtime with a condition. The alteration runs
+# only when the condition query returns true.
+[[schema_alterations]]
+name = "ec2_instance_platform"
+dependencies = ["ec2_instance"]
+condition = '''
+SELECT count(*) > 0 FROM information_schema.columns
+WHERE table_name = 'ec2_instance' AND column_name = 'platformDetails'
+'''
+sql = '''
+ALTER TABLE ec2_instance RENAME COLUMN platformDetails TO platform;
+'''
+
+# Alterations applied to every resource table in turn. {table} is substituted
+# for each table name, so one definition covers every resource type.
+[[global_schema_alterations]]
+name = "cost_code_from_tags"
+condition = '''SELECT count(*) > 0 FROM "{table}" WHERE tags['CostCode'] IS NOT NULL'''
+sql = '''
+ALTER TABLE "{table}" ADD COLUMN costCode VARCHAR;
+UPDATE "{table}" SET costCode = tags['CostCode'];
+'''
+
+# Extra tables derived from the resource tables, built after all alterations
+# have run. Useful for summaries you query often.
+[[custom_tables]]
+name = "instances_by_account"
+description = "Instance counts per account"
+dependencies = ["ec2_instance"]
+sql = '''
+CREATE TABLE instances_by_account AS
+SELECT accountId, count(*) AS instances
+FROM ec2_instance
+GROUP BY accountId;
+'''

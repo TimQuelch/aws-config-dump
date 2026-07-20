@@ -12,8 +12,17 @@ use anyhow::{Result, bail};
 use directories::ProjectDirs;
 use serde::Deserialize;
 use tokio::fs;
+use tracing::warn;
 
 use crate::builtin_alterations;
+
+// The types below are the config file format. Changing them changes the
+// interface users write against, so keep the documentation in step:
+//
+// - `example-config.toml` in the repository root is the reference example, and
+//   is loaded by a test in this file. That test will fail if it goes stale.
+// - The README config section covers the common cases in prose. Nothing checks
+//   it, so it needs updating by hand.
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 struct DbConfig {
@@ -100,9 +109,23 @@ impl ConfigFile {
         } else {
             read_or_default(&project_dirs().config_dir().join("config.toml")).await?
         };
-        Ok(file_contents
-            .map(|x| toml::from_slice(x.as_slice()))
-            .transpose()?)
+        file_contents
+            .map(|bytes| ConfigFile::parse(std::str::from_utf8(&bytes)?))
+            .transpose()
+    }
+
+    /// Deserialize a config file, warning about any fields we don't recognise.
+    ///
+    /// An unknown field is almost always a typo or a field that has been
+    /// renamed. Ignoring it silently means the user's setting has no effect
+    /// with nothing to indicate why, so warn instead. This is deliberately not
+    /// an error: an ignored field never changes behaviour, so a stale line
+    /// shouldn't stop the config loading.
+    fn parse(contents: &str) -> Result<ConfigFile> {
+        let deserializer = toml::Deserializer::parse(contents)?;
+        Ok(serde_ignored::deserialize(deserializer, |path| {
+            warn!("Ignoring unknown config field '{path}'");
+        })?)
     }
 }
 
@@ -259,6 +282,97 @@ fn project_dirs() -> ProjectDirs {
 mod tests {
     use super::*;
     use crate::builtin_alterations;
+
+    /// The reference example shipped in the repository root. Loaded at compile
+    /// time so the test makes no assumptions about the filesystem at runtime.
+    const EXAMPLE_CONFIG: &str = include_str!("../../example-config.toml");
+
+    #[test]
+    fn example_config_deserializes() {
+        let config = ConfigFile::parse(EXAMPLE_CONFIG).unwrap();
+
+        // Assert on content, not just that it parsed, so an example emptied of
+        // everything interesting doesn't quietly keep passing.
+        assert_eq!(config.default_database.as_deref(), Some("prod"));
+
+        let prod = config.databases.get("prod").expect("prod database");
+        assert_eq!(prod.aggregator_name.as_deref(), Some("my-aggregator"));
+        let dev = config.databases.get("dev").expect("dev database");
+        assert!(
+            dev.aggregator_name.is_none(),
+            "dev is the non-aggregator example"
+        );
+
+        assert!(config.query_extra_columns.contains_key("ec2_subnet"));
+        assert!(
+            config
+                .builtin_alterations
+                .disabled
+                .contains("name_from_tags")
+        );
+
+        let names: Vec<&str> = config
+            .schema_alterations
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(names.contains(&"ec2_instance_short_id"));
+        assert!(
+            config
+                .schema_alterations
+                .iter()
+                .any(|a| a.condition.is_some()),
+            "example should show a conditional alteration"
+        );
+
+        assert!(!config.global_schema_alterations.is_empty());
+        assert!(
+            config
+                .custom_tables
+                .iter()
+                .any(|t| t.name == "instances_by_account")
+        );
+    }
+
+    #[test]
+    fn unknown_field_is_ignored_not_rejected() {
+        // Fields we don't recognise warn but must not stop the config loading.
+        let config = ConfigFile::parse(
+            r#"
+            default_database = "prod"
+            not_a_real_field = "whatever"
+
+            [[schema_alterations]]
+            name = "example"
+            sql = "SELECT 1"
+            description = "removed field, now ignored"
+            "#,
+        )
+        .expect("unknown fields should not be an error");
+
+        assert_eq!(config.default_database.as_deref(), Some("prod"));
+        assert_eq!(config.schema_alterations.len(), 1);
+    }
+
+    #[test]
+    fn missing_required_field_is_still_an_error() {
+        // Warning about unknown fields must not soften genuine errors. This is
+        // the failure the README example used to hit: `description` given
+        // where `name` was required.
+        let err = ConfigFile::parse(
+            r#"
+            [[schema_alterations]]
+            description = "no name field"
+            sql = "SELECT 1"
+            "#,
+        )
+        .expect_err("missing required field should fail");
+
+        assert!(
+            err.to_string().contains("name"),
+            "error should name the missing field, got: {err}"
+        );
+    }
 
     #[test]
     fn empty_toml_deserializes_to_defaults() {

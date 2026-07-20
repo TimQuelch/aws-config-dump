@@ -45,12 +45,13 @@ acd build
 
 Builds are incremental by default. Only resources which have been updated since the last build will be retrieved with the select query. Some resource types are not available with the select query, and instead must be retrieved every build.
 
-Key flags:
+```sh
+acd build --aggregator-name my-aggregator  # read cross-account data from a Config aggregator
+acd build --with-snapshots                 # source from S3 Config snapshots instead of the API
+acd build --rebuild                        # delete and recreate the database from scratch
+```
 
-- `--aggregator-name`: use a cross-account Config aggregator
-- `--with-snapshots`: use Config snapshots from S3 instead of the API
-- `--fetch-org-accounts`: pull account names from AWS Organizations
-- `--rebuild`: delete and recreate the database from scratch
+Account names can be pulled from AWS Organizations with `--fetch-org-accounts`.
 
 ### Query
 
@@ -58,17 +59,12 @@ Key flags:
 acd query --resource-type AWS::EC2::Instance
 acd query --resource-type AWS::EC2::Instance --fields resourceId resourceName vpcId
 acd query --resource-type AWS::EC2::Instance --where state=running
+acd query --resource-type AWS::EC2::Instance --name web- --sort resourceName
+acd query --resource-type AWS::EC2::Instance --format json
 acd query --resource-type AWS::EC2::Instance --query "SELECT resourceId, tags FROM input WHERE accountId = '123456789012'"
 ```
 
-Key flags:
-
-- `--resource-type` / `-r`: filter by resource type
-- `--accounts` / `-a`: filter by account ID(s)
-- `--fields` / `-f`: select specific fields
-- `--where` / `-w`: filter with `key=value` clauses
-- `--where-raw` / `-W`: arbitrary SQL WHERE expressions
-- `--query` / `-q`: full SQL query (`input` is the resource table)
+Results are tab-separated by default. `--format` also accepts `csv`, `json`, and `ndjson`. `--id` and `--name` match resource IDs and names by regex, so they find things without needing an exact value. Within `--query`, `input` is the table of resources being queried.
 
 ### REPL
 
@@ -78,47 +74,38 @@ Open an interactive DuckDB shell against the local database:
 acd repl
 ```
 
-### Global flags
+### Getting help
 
-- `--db`: select a named database from the config file
-- `--config`: path to config file (overrides XDG default)
-- `-v` / `-vv` / `-vvv`: increase log verbosity
+`acd --help` lists the commands and the global options. `acd <command> --help` lists everything a command accepts, and shell completion covers the same ground interactively. Commands have short aliases: `acd b`, `acd q`, `acd r`.
 
 ## Configuration
 
-The config file is read from `$XDG_CONFIG_HOME/acd/config.toml` (typically `~/.config/acd/config.toml`).
+The config file is read from `$XDG_CONFIG_HOME/acd/config.toml` (typically `~/.config/acd/config.toml`). Pass `--config` to read a different file.
+
+Databases are named, and each one is a separate DuckDB file. `acd` uses `default_database` unless you pass `--db <name>`, so a single config can hold several accounts or environments side by side.
 
 ```toml
 default_database = "prod"
 
+# A multi-account setup, reading from a Config aggregator
 [databases.prod]
-aggregator_name = "my-aggregator" # use a multi account aggregator
+aggregator_name = "my-aggregator"
 aws_profile = "prod"
 
+# A single-account setup, with no aggregator
 [databases.dev]
 aws_profile = "dev"
-# path defaults to XDG data dir; override if needed:
+# path defaults to the XDG data dir; override if needed:
 # path = "/path/to/dev.duckdb"
 
-# Extra columns surfaced by the query command for specific resource types
-[query_extra_columns]
-ec2_vpc = ["cidrBlock"]
-ec2_subnet = ["vpcId", "cidrBlock", "availableIpAddressCount"]
-
-# Per-resource-type SQL alterations run after the database is built
-[[schema_alterations]]
-description = "Extract AWS::EC2::Instance state struct"
-dependencies = ["ec2_instance"]
-sql = '''
-ALTER TABLE ec2_instance ALTER COLUMN state TYPE VARCHAR USING struct_extract(state, 'name');
-'''
-
-# SQL alterations applied conditionally to every resource table
-[[global_schema_alterations]]
-description = "Add cost code column to all tables"
-condition = 'SELECT count(*) > 0 FROM "{table}" WHERE tags['CostCode'] IS NOT NULL'
-sql = '''
-ALTER TABLE "{table}" ADD COLUMN costCode VARCHAR;
-UPDATE "{table}" SET costCode = tags['CostCode'];
-'''
+# acd ships with built-in schema alterations that tidy up common resource
+# types. Turn them off individually, or all at once with disable_all = true
+[builtin_alterations]
+disabled = ["name_from_tags"]
 ```
+
+acd can also run your own SQL once the database is built: alterations against a single table, alterations applied to every table in turn, extra tables derived from the resource tables, and extra columns surfaced by `acd query`.
+
+There are a number of builtin schema alterations that run by default to make some resource types a bit more useful. These can be viewed in [`acd-cli/src/builtin_alterations.toml`](acd-cli/src/builtin_alterations.toml). This format is the same as the user provided config file, so these can be used as an example to build your own.
+
+See [`example-config.toml`](example-config.toml) for a worked example of every option. That file is loaded by a test, so it always matches the format the current version accepts.
