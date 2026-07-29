@@ -4,3 +4,4 @@ result
 !.envrc
 .pre-commit-config.yaml
 .claude/*.local.*
+.claude/worktrees
