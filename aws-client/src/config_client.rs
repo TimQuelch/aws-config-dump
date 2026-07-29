@@ -129,6 +129,21 @@ enum DispatchTarget {
 struct AccountFetcher {
     client: aws_sdk_config::Client,
     account_id: String,
+    // ListDiscoveredResources identifiers carry no region of their own. A
+    // non-aggregator build talks to a single region, so every identifier it
+    // produces is stamped with the region the client is configured for.
+    //
+    // This is the region the delete matches on for types Config's advanced
+    // query cannot select (the only types that reach this path). It assumes the
+    // config item AWS Config returns for such a type also carries the connected
+    // region in `awsRegion`. If AWS Config instead stores `global` for a global
+    // service that happens to be unselectable, the config row (region `global`)
+    // and its identifier (connected region) would disagree and the delete would
+    // reap the live row. Selectable global types are unaffected: their
+    // identifiers come from the advanced-query path, which reads `awsRegion`
+    // straight from Config. Verify against a real build before relying on the
+    // batch path for a global service.
+    region: String,
 }
 
 #[derive(Clone)]
@@ -149,9 +164,10 @@ struct WrappedAggregateResourceIdentifier(AggregateResourceIdentifier);
 
 impl Serialize for WrappedAggregateResourceIdentifier {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Identifier", 3)?;
+        let mut state = serializer.serialize_struct("Identifier", 4)?;
         state.serialize_field("resourceType", self.0.resource_type.as_str())?;
         state.serialize_field("accountId", self.0.source_account_id())?;
+        state.serialize_field("awsRegion", self.0.source_region())?;
         state.serialize_field("resourceId", self.0.resource_id())?;
         state.end()
     }
@@ -160,13 +176,15 @@ impl Serialize for WrappedAggregateResourceIdentifier {
 struct WrappedResourceIdentifier<'a> {
     inner: ResourceIdentifier,
     account_id: &'a str,
+    aws_region: &'a str,
 }
 
 impl Serialize for WrappedResourceIdentifier<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Identifier", 3)?;
+        let mut state = serializer.serialize_struct("Identifier", 4)?;
         state.serialize_field("resourceType", self.inner.resource_type().unwrap().as_str())?;
         state.serialize_field("accountId", self.account_id)?;
+        state.serialize_field("awsRegion", self.aws_region)?;
         state.serialize_field("resourceId", self.inner.resource_id().unwrap())?;
         state.end()
     }
@@ -195,6 +213,10 @@ impl DispatchingClient {
                         .await?
                         .account
                         .ok_or(anyhow!("failed to get account id from credentials"))?,
+                    region: config
+                        .region()
+                        .map(ToString::to_string)
+                        .ok_or(anyhow!("no region configured for the AWS client"))?,
                 })
             },
         })
@@ -432,15 +454,17 @@ impl<C: ConfigFetcher + Clone + Send + Sync + 'static> ConfigFetchClient for C {
         progress: ProgressBar,
     ) {
         debug!("fetching resource identifiers with select");
-        self.select_resource_config_call("SELECT resourceType, accountId, resourceId;".to_string())
-            .into_stream_03x()
-            .try_for_each(async |resource| {
-                file_tx.send(resource).await.unwrap();
-                progress.inc(1);
-                Ok(())
-            })
-            .await
-            .unwrap(); // TODO remove
+        self.select_resource_config_call(
+            "SELECT resourceType, accountId, awsRegion, resourceId;".to_string(),
+        )
+        .into_stream_03x()
+        .try_for_each(async |resource| {
+            file_tx.send(resource).await.unwrap();
+            progress.inc(1);
+            Ok(())
+        })
+        .await
+        .unwrap(); // TODO remove
     }
 }
 
@@ -508,6 +532,7 @@ impl ConfigFetcher for AccountFetcher {
         serde_json::to_string(&WrappedResourceIdentifier {
             inner: identifier,
             account_id: &self.account_id,
+            aws_region: &self.region,
         })
         .unwrap()
     }
@@ -798,6 +823,7 @@ mod tests {
         AccountFetcher {
             client,
             account_id: "123456789012".to_string(),
+            region: "us-east-1".to_string(),
         }
     }
 
@@ -934,10 +960,10 @@ mod tests {
         let rule = mock!(aws_sdk_config::Client::select_resource_config).then_output(|| {
             SelectResourceConfigOutput::builder()
                 .results(
-                    r#"{"resourceType":"AWS::EC2::Instance","accountId":"123","resourceId":"i-1"}"#,
+                    r#"{"resourceType":"AWS::EC2::Instance","accountId":"123","awsRegion":"us-east-1","resourceId":"i-1"}"#,
                 )
                 .results(
-                    r#"{"resourceType":"AWS::EC2::Instance","accountId":"123","resourceId":"i-2"}"#,
+                    r#"{"resourceType":"AWS::EC2::Instance","accountId":"123","awsRegion":"us-east-1","resourceId":"i-2"}"#,
                 )
                 .build()
         });
@@ -1023,6 +1049,7 @@ mod tests {
 
         let id_json: serde_json::Value = serde_json::from_str(&identifiers[0]).unwrap();
         assert_eq!(id_json["accountId"], "123456789012");
+        assert_eq!(id_json["awsRegion"], "us-east-1");
     }
 
     #[test]
@@ -1036,6 +1063,9 @@ mod tests {
             serde_json::from_str(&fetcher.serialize_identifier(identifier)).unwrap();
         assert_eq!(json["resourceType"], "AWS::EC2::Instance");
         assert_eq!(json["accountId"], "123456789012");
+        // ListDiscoveredResources identifiers carry no region; the account
+        // fetcher stamps them with its configured region.
+        assert_eq!(json["awsRegion"], "us-east-1");
         assert_eq!(json["resourceId"], "i-123");
     }
 
@@ -1121,6 +1151,7 @@ mod tests {
             .unwrap();
         let id_json: serde_json::Value = serde_json::from_str(&id).unwrap();
         assert_eq!(id_json["accountId"], "111111111111");
+        assert_eq!(id_json["awsRegion"], "us-east-1");
         assert_eq!(id_json["resourceId"], "bucket-1");
 
         let _config = tokio::time::timeout(Duration::from_secs(5), configs_rx.recv())
@@ -1145,6 +1176,7 @@ mod tests {
             serde_json::from_str(&fetcher.serialize_identifier(identifier)).unwrap();
         assert_eq!(json["accountId"], "222222222222");
         assert_eq!(json["resourceType"], "AWS::EC2::SecurityGroup");
+        assert_eq!(json["awsRegion"], "eu-west-1");
         assert_eq!(json["resourceId"], "sg-abc");
     }
 }

@@ -254,7 +254,7 @@ pub async fn land_fetched_rows(
                     c.execute_batch(
                         "MERGE INTO resources
                             USING fetched_temp
-                            USING (accountId, resourceType, resourceId)
+                            USING (accountId, awsRegion, resourceType, resourceId)
                             WHEN MATCHED THEN UPDATE
                             WHEN NOT MATCHED THEN INSERT;",
                     )
@@ -346,6 +346,7 @@ pub async fn build_resources_table(
             "CREATE OR REPLACE TEMPORARY TABLE resources_temp ({RESOURCES_STAGING_COLUMNS});
             CREATE OR REPLACE TEMPORARY TABLE identifiers_temp (
                 accountId VARCHAR,
+                awsRegion VARCHAR,
                 resourceType VARCHAR,
                 resourceId VARCHAR,
             );"
@@ -400,7 +401,7 @@ pub async fn build_resources_table(
             let merge_query = "
                 MERGE INTO resources old
                     USING resources_temp new
-                    USING (accountId, resourceType, resourceId)
+                    USING (accountId, awsRegion, resourceType, resourceId)
                     WHEN MATCHED AND new.configurationItemCaptureTime > old.configurationItemCaptureTime THEN UPDATE
                     WHEN NOT MATCHED THEN INSERT
                     RETURNING merge_action;
@@ -428,7 +429,7 @@ pub async fn build_resources_table(
     let delete_query = format!(
         "MERGE INTO resources
             USING identifiers_temp
-            USING (accountId, resourceType, resourceId)
+            USING (accountId, awsRegion, resourceType, resourceId)
             WHEN NOT MATCHED BY SOURCE{delete_filter} THEN DELETE
             RETURNING merge_action;"
     );
@@ -710,6 +711,7 @@ async fn build_resource_derived_table(
                         COPY (
                             SELECT
                                 accountId,
+                                awsRegion,
                                 resourceType,
                                 resourceId,
                                 CASE WHEN configuration = json('{{}}')
@@ -750,7 +752,7 @@ async fn build_resource_derived_table(
                             unnest(j.supplementaryConfiguration)
                         FROM
                             read_json(?) j
-                            JOIN resources r USING (accountId, resourceType, resourceId);"
+                            JOIN resources r USING (accountId, awsRegion, resourceType, resourceId);"
                     )
                     .as_str(),
                     params![filename],
@@ -788,12 +790,24 @@ mod tests {
     /// Stringifying it here would make these tests pass against data no
     /// production path can emit.
     fn row_json(resource_type: &str, resource_id: &str, capture_time: &str) -> String {
+        row_json_in_region(resource_type, resource_id, capture_time, "global")
+    }
+
+    /// A `resources`-shaped JSON line stored in a specific region, for tests that
+    /// exercise the region component of the merge identity.
+    fn row_json_in_region(
+        resource_type: &str,
+        resource_id: &str,
+        capture_time: &str,
+        aws_region: &str,
+    ) -> String {
         resources_row(
             resource_type,
             resource_id,
             resource_id,
             capture_time,
             &serde_json::json!({}),
+            aws_region,
         )
     }
 
@@ -803,11 +817,12 @@ mod tests {
         resource_name: &str,
         capture_time: &str,
         configuration: &serde_json::Value,
+        aws_region: &str,
     ) -> String {
         serde_json::json!({
             "arn": format!("arn:test:{resource_id}"),
             "accountId": "111111111111",
-            "awsRegion": "global",
+            "awsRegion": aws_region,
             "resourceType": resource_type,
             "resourceId": resource_id,
             "resourceName": resource_name,
@@ -828,8 +843,17 @@ mod tests {
     }
 
     fn identifier_json(resource_type: &str, resource_id: &str) -> String {
+        identifier_json_in_region(resource_type, resource_id, "global")
+    }
+
+    fn identifier_json_in_region(
+        resource_type: &str,
+        resource_id: &str,
+        aws_region: &str,
+    ) -> String {
         serde_json::json!({
             "accountId": "111111111111",
+            "awsRegion": aws_region,
             "resourceType": resource_type,
             "resourceId": resource_id,
         })
@@ -864,6 +888,46 @@ mod tests {
                         .query_map([], |row| row.get::<_, String>(0))?
                         .filter_map(Result::ok)
                         .collect(),
+                )
+            })
+            .await
+            .unwrap()
+    }
+
+    /// `(resourceId, awsRegion)` pairs, for tests where the same `resourceId`
+    /// appears in more than one region and `resource_ids` alone is ambiguous.
+    async fn region_rows(pool: &ConnectionPool) -> Vec<(String, String)> {
+        pool.get()
+            .await
+            .unwrap()
+            .with_conn(|c| {
+                Ok(c.prepare(
+                    "SELECT resourceId, awsRegion FROM resources \
+                     ORDER BY resourceId, awsRegion",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(Result::ok)
+                .collect())
+            })
+            .await
+            .unwrap()
+    }
+
+    /// The stored capture time of the single row in `aws_region`, as text so the
+    /// assertion can match on the date without pinning the timestamp format.
+    async fn capture_time_in_region(pool: &ConnectionPool, aws_region: &str) -> String {
+        let region = aws_region.to_owned();
+        pool.get()
+            .await
+            .unwrap()
+            .with_conn(move |c| {
+                c.query_row(
+                    "SELECT configurationItemCaptureTime::VARCHAR FROM resources \
+                     WHERE awsRegion = ?",
+                    [region],
+                    |row| row.get(0),
                 )
             })
             .await
@@ -1262,6 +1326,109 @@ mod tests {
         assert!(
             ids.contains(&"i-live".to_owned()),
             "disabling a fetcher must not disturb Config's own rows"
+        );
+    }
+
+    // --- Region is part of the merge identity --------------------------------
+
+    /// Two resources that share account, type, and id but differ in region are
+    /// distinct. The old three-column key collapsed them, so one overwrote the
+    /// other; the region column keeps them apart and lets each update alone.
+    #[tokio::test]
+    async fn same_resource_id_in_two_regions_does_not_collide() {
+        let pool = setup_pool().await;
+
+        let seed = [
+            row_json_in_region(CONFIG_TYPE, "shared", "2026-01-01T00:00:00Z", "us-east-1"),
+            row_json_in_region(CONFIG_TYPE, "shared", "2026-01-01T00:00:00Z", "us-west-2"),
+        ];
+        // Both regions are still present in the listing, so neither is reaped.
+        let identifiers = [
+            identifier_json_in_region(CONFIG_TYPE, "shared", "us-east-1"),
+            identifier_json_in_region(CONFIG_TYPE, "shared", "us-west-2"),
+        ];
+        build_resources_table(
+            &pool,
+            &json_file(&seed).await,
+            &json_file(&identifiers).await,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            region_rows(&pool).await,
+            vec![
+                ("shared".to_owned(), "us-east-1".to_owned()),
+                ("shared".to_owned(), "us-west-2".to_owned()),
+            ],
+            "same id in two regions must be stored as two rows, not collapsed into one"
+        );
+
+        // A later build re-emits only the us-east-1 resource, with a newer
+        // capture time. The us-west-2 row shares the id and must be untouched.
+        let update = [row_json_in_region(
+            CONFIG_TYPE,
+            "shared",
+            "2026-06-01T00:00:00Z",
+            "us-east-1",
+        )];
+        build_resources_table(
+            &pool,
+            &json_file(&update).await,
+            &json_file(&identifiers).await,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            capture_time_in_region(&pool, "us-east-1")
+                .await
+                .contains("2026-06-01"),
+            "the re-emitted region should have been updated"
+        );
+        assert!(
+            capture_time_in_region(&pool, "us-west-2")
+                .await
+                .contains("2026-01-01"),
+            "the same-id row in the other region should not have been touched"
+        );
+    }
+
+    /// A resource that vanished in one region is reaped even though a same-id
+    /// resource still exists in another. Under the old key the surviving
+    /// identifier kept the whole key matched, so the stale row was never
+    /// deleted.
+    #[tokio::test]
+    async fn resource_deleted_in_one_region_is_reaped_despite_a_same_id_survivor() {
+        let pool = setup_pool().await;
+
+        let seed = [
+            row_json_in_region(CONFIG_TYPE, "shared", "2026-01-01T00:00:00Z", "us-east-1"),
+            row_json_in_region(CONFIG_TYPE, "shared", "2026-01-01T00:00:00Z", "us-west-2"),
+        ];
+        // The listing reports the resource only in us-west-2; the us-east-1 one
+        // is gone.
+        let identifiers = [identifier_json_in_region(
+            CONFIG_TYPE,
+            "shared",
+            "us-west-2",
+        )];
+        build_resources_table(
+            &pool,
+            &json_file(&seed).await,
+            &json_file(&identifiers).await,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            region_rows(&pool).await,
+            vec![("shared".to_owned(), "us-west-2".to_owned())],
+            "the region absent from the identifier listing must be reaped while its \
+             same-id survivor in another region remains"
         );
     }
 
@@ -1716,6 +1883,7 @@ mod tests {
                 name,
                 "2026-07-17T00:00:00Z",
                 &serde_json::json!({ "ParentId": parent }),
+                "global",
             )
         };
 
