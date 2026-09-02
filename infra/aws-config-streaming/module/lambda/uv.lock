@@ -1,0 +1,117 @@
+version = 1
+revision = 3
+requires-python = ">=3.14"
+
+[[package]]
+name = "aws-lambda-powertools"
+version = "3.35.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jmespath" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a9/5b/9b36aa010e686bbe0a8bfb7367430994254a68d1e8c2383af7b3264c6ebb/aws_lambda_powertools-3.35.0.tar.gz", hash = "sha256:27c1c7d7920f214a68a11505dca33ce3709a38c4b79f5fbc94141ec0af92c9f8", size = 803046, upload-time = "2026-09-15T12:18:56.22Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/6e/2a2764dd3fef758e8bde3ec5c0fb6e2ceeace2a873ca5def30b6c69a7bcf/aws_lambda_powertools-3.35.0-py3-none-any.whl", hash = "sha256:e8fbc27d74272fb99cbec67305250e825d1630dceb2dbfdcf5908dc9c4c82dcf", size = 960326, upload-time = "2026-09-15T12:18:54.031Z" },
+]
+
+[[package]]
+name = "boto3-stubs"
+version = "1.43.99"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore-stubs" },
+    { name = "types-s3transfer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/42/14/73709f75433a492d2148f330f23eccc5b45bac2ae5f8015dd5c6fef45f8f/boto3_stubs-1.43.99.tar.gz", hash = "sha256:d10dee573ebcd4f9b3169311721767f829f9ccb9c42690731e2a97f13a6deaf1", size = 104559, upload-time = "2026-09-21T20:42:34.621Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/a5/ef106900937ca011b3af2d98705001b7fd1799f57f0a58c71f9393125c46/boto3_stubs-1.43.99-py3-none-any.whl", hash = "sha256:f91a19e9a16ea60d903aab2eaef72b3fa3bb26867742c1d4c90f73390b739dd7", size = 71511, upload-time = "2026-09-21T20:42:30.776Z" },
+]
+
+[package.optional-dependencies]
+s3 = [
+    { name = "mypy-boto3-s3" },
+]
+
+[[package]]
+name = "botocore-stubs"
+version = "1.43.67"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3f/45/53d662227dc4787b2c854445ee7eb4751cb5d74cfb5c686a6ecbe1f94c17/botocore_stubs-1.43.67.tar.gz", hash = "sha256:853e74014a1f557055c4ffae5fb38d7c65c7c0520e1aab366cac41d5428f419d", size = 42846, upload-time = "2026-08-08T14:57:53.412Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/5e/bdbf19967898a032292da65a47d6e25b2eee55865db4e687f861d80b5602/botocore_stubs-1.43.67-py3-none-any.whl", hash = "sha256:c51262bac3341c1cda71f05fa01141fffd3990d7a92c7960e3b755c1bc830373", size = 67244, upload-time = "2026-08-08T14:57:52.01Z" },
+]
+
+[[package]]
+name = "duckdb"
+version = "2.0.0.dev2609121639"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/24/a2d5c4b156fb9186387eafc4d0314878f3ecceddef61312c4097b285ddfc/duckdb-2.0.0.dev2609121639.tar.gz", hash = "sha256:df9072056c39897288186e98d9ae36ee00f80c101f7e0fb3bb92638a6da16a45", size = 16186248, upload-time = "2026-09-12T19:16:33.2Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/81/e40bd48c3149108a0747e32fdd1dbef8d03a833a954794d9372f1b9af8a1/duckdb-2.0.0.dev2609121639-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:490c12b5382f2e32b1656520e016eb52ac98158d21d851d1aeb4294eb3fe2027", size = 35715461, upload-time = "2026-09-12T19:16:14.627Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/61/2ee7229a2cda79b91774e7f6f8a2142bebf1b475146b5f4d0bca078b471b/duckdb-2.0.0.dev2609121639-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:d4ea9f80e867186263eb28d6ecabaa6c821275b619e841685853be18eb797b63", size = 18987926, upload-time = "2026-09-12T19:16:17.647Z" },
+    { url = "https://files.pythonhosted.org/packages/95/28/0e9c03cab1cb8160d7db299daba179fcdd63db1c746d535e5622a4cea523/duckdb-2.0.0.dev2609121639-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:400c960ce69a6664820f093a45a392badb25d1cd2e584a7f6a019f79f094b27e", size = 16852740, upload-time = "2026-09-12T19:16:20.167Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/af/fec0aca3f7dbed37b2585da14ee6ca0e9fecf62689b121533877a64d1fa3/duckdb-2.0.0.dev2609121639-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e188691c4891421f78eb11d581da5088b2abc45e05461aa7f705c70035008978", size = 20881062, upload-time = "2026-09-12T19:16:22.804Z" },
+    { url = "https://files.pythonhosted.org/packages/42/ee/c91c2421cd79f4b80f05ceeda54a6f19686430d9147134401292189cf184/duckdb-2.0.0.dev2609121639-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:e8aaeefea4c60b5008493a84d9cddad076561d36c40a77748b80a968e40ad6bd", size = 24128745, upload-time = "2026-09-12T19:16:25.293Z" },
+    { url = "https://files.pythonhosted.org/packages/88/4c/95534fc5e3666863ecc0a2babd92b3f3f078e33fc027f045a0eb2509a75f/duckdb-2.0.0.dev2609121639-cp314-cp314-win_amd64.whl", hash = "sha256:c831827688cc272c671658c2221833e81cb86a8be8e6447ebfe3e0b0b2d05cf6", size = 14850326, upload-time = "2026-09-12T19:16:27.679Z" },
+    { url = "https://files.pythonhosted.org/packages/69/04/a455b1cf37b3518173c86589838bb6b44555e2efd117edc5926a711a1b21/duckdb-2.0.0.dev2609121639-cp314-cp314-win_arm64.whl", hash = "sha256:c8212eeea9584a97278d0f2a4614b9cde5ccf715a407b28d72048b4256e278ed", size = 15328663, upload-time = "2026-09-12T19:16:30.771Z" },
+]
+
+[[package]]
+name = "jmespath"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/59/322338183ecda247fb5d1763a6cbe46eff7222eaeebafd9fa65d4bf5cb11/jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d", size = 27377, upload-time = "2026-01-22T16:35:26.279Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/2f/967ba146e6d58cf6a652da73885f52fc68001525b4197effc174321d70b4/jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64", size = 20419, upload-time = "2026-01-22T16:35:24.919Z" },
+]
+
+[[package]]
+name = "lambda"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "aws-lambda-powertools" },
+    { name = "duckdb" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "boto3-stubs", extra = ["s3"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-lambda-powertools", specifier = ">=3.34.0" },
+    { name = "duckdb", specifier = ">=1.5.5" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "boto3-stubs", extras = ["s3"], specifier = ">=1.43.90" }]
+
+[[package]]
+name = "mypy-boto3-s3"
+version = "1.43.93"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/3b/8ca4c299090b3a7fe97c6db8e17a6d7db92cb9b456804e59426ddea84824/mypy_boto3_s3-1.43.93.tar.gz", hash = "sha256:858e1ffe738ece3fa83ebc2b50f19aa53d0d69c1084739b37ec671b060713192", size = 79411, upload-time = "2026-09-11T19:44:36.959Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/f1/7ebc5d419bda7ab80dba0e59d5484a70229e617cf346665882f70fa499c3/mypy_boto3_s3-1.43.93-py3-none-any.whl", hash = "sha256:52be1672a8b65ff3a1f779b46f7ed4fab85e78f15b353ce7eb5e20a9f15e7b9b", size = 86721, upload-time = "2026-09-11T19:44:35.263Z" },
+]
+
+[[package]]
+name = "types-s3transfer"
+version = "0.16.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/64/42689150509eb3e6e82b33ee3d89045de1592488842ddf23c56957786d05/types_s3transfer-0.16.0.tar.gz", hash = "sha256:b4636472024c5e2b62278c5b759661efeb52a81851cde5f092f24100b1ecb443", size = 13557, upload-time = "2025-12-08T08:13:09.928Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/27/e88220fe6274eccd3bdf95d9382918716d312f6f6cef6a46332d1ee2feff/types_s3transfer-0.16.0-py3-none-any.whl", hash = "sha256:1c0cd111ecf6e21437cb410f5cddb631bfb2263b77ad973e79b9c6d0cb24e0ef", size = 19247, upload-time = "2025-12-08T08:13:08.426Z" },
+]
+
+[[package]]
+name = "typing-extensions"
+version = "4.16.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
+]

@@ -1,0 +1,14 @@
+[project]
+name = "lambda"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["aws-lambda-powertools>=3.34.0", "duckdb>=1.5.5"]
+
+[tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+
+[dependency-groups]
+dev = ["boto3-stubs[s3]>=1.43.90"]

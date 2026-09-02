@@ -90,6 +90,11 @@
             clippy.settings.extraArgs = "--fix --allow-dirty";
           };
         };
+
+        opentofu = pkgs.opentofu.withPlugins (p: [
+          p.hashicorp_aws
+          p.hashicorp_awscc
+        ]);
       in
       {
         packages.default = acd;
@@ -122,9 +127,18 @@
               [
                 bacon
                 rust-analyzer
+                opentofu
+                uv
                 llm-agents.packages.${system}.openspec
               ]
               ++ preCommit.enabledPackages;
+
+            env = {
+              LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+                pkgs.stdenv.cc.cc.lib
+                pkgs.zlib
+              ];
+            };
           };
         };
 
