@@ -129,6 +129,7 @@
                 rust-analyzer
                 opentofu
                 uv
+                pkgs.python314
                 llm-agents.packages.${system}.openspec
               ]
               ++ preCommit.enabledPackages;

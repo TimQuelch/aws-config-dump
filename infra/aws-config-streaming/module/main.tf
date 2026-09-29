@@ -97,7 +97,7 @@ data "aws_iam_policy_document" "lambda_permissions" {
 }
 
 resource "aws_iam_role" "lambda" {
-  name               = "acd-aws-config-history"
+  name               = "acd-aws-config-stream-lambda"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 }
 
@@ -121,7 +121,7 @@ resource "aws_iam_role_policies_exclusive" "lambda" {
 }
 
 resource "aws_s3_bucket" "assets" {
-  bucket           = "assets-${local.account_id}-${local.region}-an"
+  bucket           = "deploy-assets-${local.account_id}-${local.region}-an"
   bucket_namespace = "account-regional"
 }
 
@@ -137,13 +137,16 @@ resource "aws_s3_object" "source" {
 }
 
 locals {
-  batch_size            = 100
-  function_timeout      = 180 # Hopefully this is an upper bound
-  batch_window_duration = 300 # 300 is SQS max
+  # Lambda gracefully skips unprocessed records if running out of time or memory, so batch size and
+  # window can be set fairly high and timeout can be set fairly low
+  # Maximising batch size reduces nubmer of iceberg snapshots which improves query performance
+  batch_size            = 10000 # 10000 is SQS->Lambda max
+  batch_window_duration = 300   # 300 is SQS max
+  function_timeout      = 300   # 5min is good balance between latency and batch size
 }
 
 resource "aws_lambda_function" "this" {
-  function_name = "acd-aws-config-history"
+  function_name = "acd-aws-config-stream"
   role          = aws_iam_role.lambda.arn
 
   handler          = "main.lambda_handler"
@@ -151,7 +154,7 @@ resource "aws_lambda_function" "this" {
   s3_key           = aws_s3_object.source.key
   source_code_hash = aws_s3_object.source.source_hash
 
-  memory_size = 2048
+  memory_size = 8192
   timeout     = local.function_timeout
 
   ephemeral_storage {
@@ -176,13 +179,13 @@ resource "aws_lambda_function" "this" {
 }
 
 resource "aws_sqs_queue" "queue" {
-  name = "acd-aws-config-history"
+  name = "acd-aws-config-stream"
 
-  receive_wait_time_seconds  = 20 # enable max long polling
+  receive_wait_time_seconds = 20 # enable max long polling
 
   # Lower than the recommended (6 x timeout + batch window) because the operation is idempotent.
   # This reduces latency a little bit if there are any errors due to conflicing transactions
-  visibility_timeout_seconds = 2 * local.function_timeout + local.batch_window_duration
+  visibility_timeout_seconds = local.function_timeout + local.batch_window_duration
 }
 
 resource "aws_lambda_event_source_mapping" "sqs_lambda_mapping" {
@@ -193,9 +196,9 @@ resource "aws_lambda_event_source_mapping" "sqs_lambda_mapping" {
   maximum_batching_window_in_seconds = local.batch_window_duration
   function_response_types            = ["ReportBatchItemFailures"]
 
-  scaling_config {
-    maximum_concurrency = 2 # limit concurrency to minimum, otherwise they conflict on write
-  }
+  # scaling_config {
+  #   maximum_concurrency = 4 # limit concurrency to minimum, otherwise they conflict on write
+  # }
 
   metrics_config {
     metrics = ["EventCount"]
@@ -243,10 +246,10 @@ resource "aws_sqs_queue_policy" "this" {
   policy    = data.aws_iam_policy_document.queue_policy.json
 }
 
-resource "aws_sns_topic_subscription" "this" {
-  topic_arn = var.source_sns_topic_arn
-  endpoint  = aws_sqs_queue.queue.arn
+# resource "aws_sns_topic_subscription" "this" {
+#   topic_arn = var.source_sns_topic_arn
+#   endpoint  = aws_sqs_queue.queue.arn
 
-  protocol             = "sqs"
-  raw_message_delivery = true # don't wrap in SNS json
-}
+#   protocol             = "sqs"
+#   raw_message_delivery = true # don't wrap in SNS json
+# }

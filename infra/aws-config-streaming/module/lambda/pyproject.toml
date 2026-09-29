@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = ["aws-lambda-powertools>=3.34.0", "duckdb>=1.5.5"]
+dependencies = [
+  "aws-lambda-powertools>=3.34.0",
+  "boto3>=1.43.104",
+  "duckdb>=1.5.5",
+]
 
 [tool.basedpyright]
 venvPath = "."
