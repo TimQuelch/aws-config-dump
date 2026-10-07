@@ -15,11 +15,11 @@ use tokio::task;
 use tracing::{debug, error, info};
 
 use crate::builtin_fetchers;
+use crate::config::Config;
 use crate::db;
 use crate::fetcher::{self, Fetcher};
 use crate::schema_alterations;
-use crate::util::temp_file_writer;
-use crate::{config::Config, util};
+use crate::util;
 
 /// A running fetcher: `Ok(None)` means it failed and nothing should land.
 type FetcherHandle = task::JoinHandle<anyhow::Result<Option<fetcher::FetchOutput>>>;
@@ -258,8 +258,8 @@ async fn fetch_resources(
 
     info!(?modified_type_counts, "modified counts");
 
-    let (resources_tx, resources_handle) = temp_file_writer();
-    let (identifiers_tx, identifiers_handle) = temp_file_writer();
+    let (resources_tx, resources_handle) = util::temp_file_writer();
+    let (identifiers_tx, identifiers_handle) = util::temp_file_writer();
 
     info!("fetching modified resource configs for selectable types");
     {
