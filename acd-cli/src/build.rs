@@ -38,8 +38,8 @@ impl FetchSource {
     /// fetcher-sourced resources either, so those builds still need them.
     fn fetches(&self) -> bool {
         match self {
-            FetchSource::Api | FetchSource::Snapshots => true,
             FetchSource::Skip => false,
+            _ => true,
         }
     }
 }
